@@ -1,0 +1,6 @@
+@LEB2SCRAPPER_HostAddress = http://localhost:5015
+
+GET {{LEB2SCRAPPER_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

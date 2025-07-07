@@ -1,0 +1,18 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\LEB2SCRAPPER.Entity\LEB2SCRAPPER.Entity.csproj" />
+    <ProjectReference Include="..\LEB2SCRAPPER.Infrastructure\LEB2SCRAPPER.Infrastructure.csproj" />
+    <ProjectReference Include="..\LEB2SCRAPPER.Repository\LEB2SCRAPPER.Repository.csproj" />
+    <ProjectReference Include="..\LEB2SCRAPPER.Contracts\LEB2SCRAPPER.Contracts.csproj" />
+    <ProjectReference Include="..\LEB2SCRAPPER.Service.Contracts\LEB2SCRAPPER.Service.Contracts.csproj" />
+</ItemGroup>
+
+
+</Project>
