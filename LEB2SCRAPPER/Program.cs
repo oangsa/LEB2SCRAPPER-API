@@ -3,6 +3,8 @@ using LEB2SCRAPPER.Service;
 using LEB2SCRAPPER.Service.Contracts.Core;
 using LEB2SCRAPPER.Service.Core;
 using LEB2SCRAPPER.Repository.Core;
+using LEB2SCRAPPER.Middleware;
+using LEB2SCRAPPER.Extensions;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -16,12 +18,25 @@ builder.Services.AddScoped<ICoreAdapterManager, CoreAdapterManager>();
 builder.Services.AddScoped<IServiceManager, ServiceManager>();
 builder.Services.AddScoped<IRepositoryManager, RepositoryManager>();
 
+// Configure CORS
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("AllowAll", policy =>
+    {
+        policy.AllowAnyOrigin()
+              .AllowAnyMethod()
+              .AllowAnyHeader();
+    });
+});
+
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
 var app = builder.Build();
 
 // Configure the HTTP request pipeline.
+app.UseGlobalExceptionMiddleware();
+
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
