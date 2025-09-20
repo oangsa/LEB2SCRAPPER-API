@@ -4,9 +4,6 @@ using LEB2SCRAPPER.Infrastructure.Contracts.HttpService;
 using LEB2SCRAPPER.Infrastructure.HttpService;
 using LEB2SCRAPPER.Entity.Exceptions.ActivityCustomException;
 using LEB2SCRAPPER.Entity.Models.Response;
-using System.Text;
-using System.Text.Json;
-using System.Text.Json.Serialization;
 
 namespace LEB2SCRAPPER.Repository.Master;
 

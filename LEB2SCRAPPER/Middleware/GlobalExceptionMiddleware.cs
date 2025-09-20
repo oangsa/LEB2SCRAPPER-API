@@ -43,7 +43,7 @@ public class GlobalExceptionMiddleware
             case ArgumentException argEx:
                 response.Message = "Invalid argument provided.";
                 response.Details = argEx.Message;
-                context.Response.StatusCode = (int)HttpStatusCode.BadRequest;
+                context.Response.StatusCode = (int) HttpStatusCode.BadRequest;
                 break;
 
             case UnauthorizedAccessException:

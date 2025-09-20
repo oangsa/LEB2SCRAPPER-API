@@ -1,0 +1,62 @@
+# Git
+.git
+.gitignore
+.gitattributes
+*.md
+
+# Visual Studio
+.vs/
+.vscode/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Build results
+[Dd]ebug/
+[Dd]ebugPublic/
+[Rr]elease/
+[Rr]eleases/
+x64/
+x86/
+build/
+bld/
+[Bb]in/
+[Oo]bj/
+**/bin/
+**/obj/
+
+# MSTest test Results
+[Tt]est[Rr]esult*/
+[Bb]uild[Ll]og.*
+
+# NuGet
+*.nupkg
+**/packages/*
+!**/packages/build/
+*.nuget.props
+*.nuget.targets
+.nuget/
+**/.nuget/
+**/packages/
+**/global-packages/
+**/.nuget.cache
+packages/
+
+# Others
+*.cache
+*.log
+*.vsidx
+*.tmp
+.DS_Store
+Thumbs.db
+
+# Docker
+Dockerfile*
+.dockerignore
+
+# IDE
+.idea/
+*.swp
+*.swo
+*~

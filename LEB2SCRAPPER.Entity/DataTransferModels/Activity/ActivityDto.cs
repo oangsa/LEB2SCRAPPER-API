@@ -12,5 +12,5 @@ public class ActivityDto
     [Range(1, int.MaxValue, ErrorMessage = "ClassId must be greater than 0")]
     public int ClassId { get; set; }
 
-    public List<Models.Activity.Activity>? activities { get; set; }
+    public List<Models.Activity.Activity>? Activities { get; set; }
 }

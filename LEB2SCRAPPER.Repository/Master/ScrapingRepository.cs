@@ -21,8 +21,12 @@ public class ScrapingRepository : IScrapingRepository
 
     public ScrapingRepository()
     {
-        _chromeOptions.AddArgument("--headless");
+        _chromeOptions.AddArgument("--headless=new");
+        _chromeOptions.AddArgument("--disable-gpu");
         _chromeOptions.AddArgument("--no-sandbox");
+        _chromeOptions.AddArgument("--window-size=1920,1080");
+        _chromeOptions.AddArgument("--single-process");
+        _chromeOptions.AddArgument("--no-zygote");
         _chromeOptions.AddArgument("--disable-dev-shm-usage");
         _chromeOptions.AddArgument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/");
         driver = new ChromeDriver(_chromeOptions);
