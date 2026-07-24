@@ -1,0 +1,71 @@
+name: Deploy to Cloud Run
+
+on:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: cloud-run-production
+  cancel-in-progress: false
+
+env:
+  CLOUD_RUN_SERVICE: leb2scrapper-api
+  GCP_REGION: asia-southeast3
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 9.0.x
+
+      - name: Restore dependencies
+        run: dotnet restore LEB2SCRAPPER.sln
+
+      - name: Build
+        run: dotnet build LEB2SCRAPPER.sln --configuration Release --no-restore
+
+      - name: Test
+        run: dotnet test LEB2SCRAPPER.sln --configuration Release --no-build
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v3
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+
+      - name: Deploy source to Cloud Run
+        id: deploy
+        uses: google-github-actions/deploy-cloudrun@v3
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          region: ${{ env.GCP_REGION }}
+          service: ${{ env.CLOUD_RUN_SERVICE }}
+          source: .
+          timeout: 300s
+          env_vars: |-
+            ASPNETCORE_ENVIRONMENT=Production
+            ASPNETCORE_FORWARDEDHEADERS_ENABLED=true
+          flags: >-
+            --port=8080
+            --cpu=1
+            --memory=1Gi
+            --concurrency=2
+            --min-instances=0
+            --max-instances=3
+            --service-account=${{ vars.GCP_RUNTIME_SERVICE_ACCOUNT }}
+
+      - name: Add deployment URL to summary
+        run: |
+          echo "Cloud Run URL: ${{ steps.deploy.outputs.url }}" >> "$GITHUB_STEP_SUMMARY"
