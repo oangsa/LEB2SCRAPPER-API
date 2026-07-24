@@ -21,6 +21,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "LEB2SCRAPPER.Service.Contra
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "LEB2SCRAPPER.Presentation", "LEB2SCRAPPER.Presentation\LEB2SCRAPPER.Presentation.csproj", "{E15179B2-312A-45C1-85A8-4E56376DF6B6}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "LEB2SCRAPPER.Tests", "LEB2SCRAPPER.Tests\LEB2SCRAPPER.Tests.csproj", "{2F96A380-7B66-4CD0-A361-243AC747AEBB}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -139,6 +141,18 @@ Global
 		{E15179B2-312A-45C1-85A8-4E56376DF6B6}.Release|x64.Build.0 = Release|Any CPU
 		{E15179B2-312A-45C1-85A8-4E56376DF6B6}.Release|x86.ActiveCfg = Release|Any CPU
 		{E15179B2-312A-45C1-85A8-4E56376DF6B6}.Release|x86.Build.0 = Release|Any CPU
+		{2F96A380-7B66-4CD0-A361-243AC747AEBB}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{2F96A380-7B66-4CD0-A361-243AC747AEBB}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{2F96A380-7B66-4CD0-A361-243AC747AEBB}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{2F96A380-7B66-4CD0-A361-243AC747AEBB}.Debug|x64.Build.0 = Debug|Any CPU
+		{2F96A380-7B66-4CD0-A361-243AC747AEBB}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{2F96A380-7B66-4CD0-A361-243AC747AEBB}.Debug|x86.Build.0 = Debug|Any CPU
+		{2F96A380-7B66-4CD0-A361-243AC747AEBB}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{2F96A380-7B66-4CD0-A361-243AC747AEBB}.Release|Any CPU.Build.0 = Release|Any CPU
+		{2F96A380-7B66-4CD0-A361-243AC747AEBB}.Release|x64.ActiveCfg = Release|Any CPU
+		{2F96A380-7B66-4CD0-A361-243AC747AEBB}.Release|x64.Build.0 = Release|Any CPU
+		{2F96A380-7B66-4CD0-A361-243AC747AEBB}.Release|x86.ActiveCfg = Release|Any CPU
+		{2F96A380-7B66-4CD0-A361-243AC747AEBB}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

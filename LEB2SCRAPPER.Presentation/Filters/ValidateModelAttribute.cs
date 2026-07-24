@@ -18,7 +18,7 @@ public class ValidateModelAttribute : ActionFilterAttribute
             {
                 StatusCode = 400,
                 Message = "Validation failed",
-                ResponseCode = "VALIDATION_ERROR",
+                ResponseCode = ApiErrorCodes.InvalidRequest,
                 TraceId = context.HttpContext.TraceIdentifier,
                 ValidationErrors = context.ModelState
                     .Where(x => x.Value?.Errors.Count > 0)

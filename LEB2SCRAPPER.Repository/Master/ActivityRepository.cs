@@ -1,7 +1,7 @@
 using LEB2SCRAPPER.Contracts.Repository;
 using LEB2SCRAPPER.Entity.Models.Activity;
 using LEB2SCRAPPER.Infrastructure.Contracts.HttpService;
-using LEB2SCRAPPER.Infrastructure.HttpService;
+using LEB2SCRAPPER.Infrastructure.Contracts.Outbound;
 using LEB2SCRAPPER.Entity.Exceptions.ActivityCustomException;
 using LEB2SCRAPPER.Entity.Models.Response;
 
@@ -10,33 +10,52 @@ namespace LEB2SCRAPPER.Repository.Master;
 public class ActivityRepository : IActivityRepository
 {
     private readonly IHttpService _httpService;
+    private readonly IClientFingerprintProvider _clientFingerprintProvider;
+    private readonly IActivityResultCache _activityResultCache;
     private static readonly string BaseUrl = "https://app.leb2.org/api/get/assessment-activities/student";
 
-    public ActivityRepository()
+    public ActivityRepository(
+        IHttpService httpService,
+        IClientFingerprintProvider clientFingerprintProvider,
+        IActivityResultCache activityResultCache)
     {
-        _httpService = new HttpService();
+        _httpService = httpService;
+        _clientFingerprintProvider = clientFingerprintProvider;
+        _activityResultCache = activityResultCache;
     }
 
-    public async Task<List<Activity>> GetActivitiesAsync(int userId, int classId, string token)
+    public async Task<List<Activity>> GetActivitiesAsync(
+        int userId,
+        int classId,
+        string token,
+        CancellationToken cancellationToken = default)
     {
         if (userId <= 0 || classId <= 0 || string.IsNullOrWhiteSpace(token))
         {
             throw new ActivityCustomExceptionException("User ID, Class ID, and Token must be provided.");
         }
 
-        var url = Url(classId.ToString(), userId.ToString());
-        var headers = Getheaders(token);
+        var clientKey = _clientFingerprintProvider.CreateForSession(token);
+        var context = new OutboundRequestContext(
+            Leb2OutboundEndpoints.Activities,
+            clientKey,
+            UsesSessionCredential: true);
 
-        try
-        {
-            var response = await _httpService.GetAsync<ActivityResponse>(url, headers);
+        return await _activityResultCache.GetActivitiesAsync(
+            clientKey,
+            userId,
+            classId,
+            async requestToken =>
+            {
+                var response = await _httpService.GetAsync<ActivityResponse>(
+                    Url(classId.ToString(), userId.ToString()),
+                    context,
+                    Getheaders(token),
+                    requestToken);
 
-            return response.Activities ?? new List<Activity>();
-        }
-        catch (Exception ex)
-        {
-            throw new ActivityCustomExceptionException($"Failed to fetch activities for user {userId} in class {classId}: {ex.Message}");
-        }
+                return response.Activities ?? new List<Activity>();
+            },
+            cancellationToken);
     }
 
     private static Dictionary<string, string> Getheaders(string token)

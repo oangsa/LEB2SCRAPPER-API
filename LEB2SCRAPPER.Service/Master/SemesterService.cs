@@ -7,9 +7,14 @@ public class SemesterService(ICoreAdapterManager coreAdapterManager) : ISemester
 {
     private readonly IRepositoryManager _repositoryManager = coreAdapterManager.RepositoryManager;
 
-    public async Task<List<int>?> GetSemestersAsync(string token)
+    public async Task<List<int>?> GetSemestersAsync(
+        string token,
+        CancellationToken cancellationToken = default)
     {
-        var semesters = await _repositoryManager.ScrapingRepository.GetSemesterIdsAsync(token);
+        var semesters = await _repositoryManager.ScrapingRepository.GetSemesterIdsAsync(
+            token,
+            cancellationToken);
+
         return semesters;
     }
 }

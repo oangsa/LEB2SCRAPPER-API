@@ -1,18 +1,27 @@
+using System.Text.Json.Serialization;
+
 namespace LEB2SCRAPPER.Entity.Models.Response;
 
 public class LoginResponse
 {
+    [JsonRequired]
     public bool Success { get; set; }
     public Result? Result { get; set; }
     public string? Token { get; set; }
+
+    [JsonPropertyName("rememberToken")]
     public string? RememberToken { get; set; }
 
 }
 
 public class Result
 {
+    [JsonPropertyName("studentId")]
     public string StudentId { get; set; } = string.Empty;
+
+    [JsonPropertyName("radiusExpiration")]
     public string RadiusExpiration { get; set; } = string.Empty;
+
     public string Email { get; set; } = string.Empty;
     public string Firstname { get; set; } = string.Empty;
     public string Lastname { get; set; } = string.Empty;

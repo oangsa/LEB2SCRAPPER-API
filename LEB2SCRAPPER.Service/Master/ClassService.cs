@@ -9,9 +9,16 @@ public class ClassService(ICoreAdapterManager coreAdapterManager) : IClassServic
 {
     private readonly IRepositoryManager _repositoryManager = coreAdapterManager.RepositoryManager;
 
-    public async Task<List<ClassInfo>?> GetClassesAsync(int semesterId, string token)
+    public async Task<List<ClassInfo>?> GetClassesAsync(
+        int semesterId,
+        string token,
+        CancellationToken cancellationToken = default)
     {
-        var classes = await _repositoryManager.ScrapingRepository.GetClassesBySemesterIdAsync(semesterId, token);
+        var classes = await _repositoryManager.ScrapingRepository.GetClassesBySemesterIdAsync(
+            semesterId,
+            token,
+            cancellationToken);
+
         return classes;
     }
 }

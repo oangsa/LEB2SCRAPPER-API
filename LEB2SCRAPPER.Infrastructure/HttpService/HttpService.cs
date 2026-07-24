@@ -1,7 +1,10 @@
+using System.Net;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using System.Text;
+using LEB2SCRAPPER.Entity.Exceptions.Leb2Integration;
 using LEB2SCRAPPER.Infrastructure.Contracts.HttpService;
+using LEB2SCRAPPER.Infrastructure.Contracts.Outbound;
 
 namespace LEB2SCRAPPER.Infrastructure.HttpService;
 
@@ -9,10 +12,14 @@ public class HttpService : IHttpService
 {
     private readonly HttpClient _httpClient;
     private readonly JsonSerializerOptions _jsonOptions;
+    private readonly IOutboundRequestGate _outboundRequestGate;
 
-    public HttpService()
+    public HttpService(
+        HttpClient httpClient,
+        IOutboundRequestGate outboundRequestGate)
     {
-        _httpClient = new HttpClient();
+        _httpClient = httpClient;
+        _outboundRequestGate = outboundRequestGate;
         _jsonOptions = new JsonSerializerOptions
         {
             PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
@@ -26,89 +33,226 @@ public class HttpService : IHttpService
             }
         };
     }
-    public async Task<T> GetAsync<T>(string url, Dictionary<string, string>? headers = null)
+
+    public Task<T> GetAsync<T>(
+        string url,
+        OutboundRequestContext context,
+        Dictionary<string, string>? headers = null,
+        CancellationToken cancellationToken = default)
     {
-        var request = new HttpRequestMessage(HttpMethod.Get, url);
+        return _outboundRequestGate.ExecuteAsync(
+            context,
+            token => SendAsync<T>(HttpMethod.Get, url, null, context, headers, token),
+            cancellationToken);
+    }
+
+    public Task<T> PostAsync<T>(
+        string url,
+        object? body,
+        OutboundRequestContext context,
+        Dictionary<string, string>? headers = null,
+        CancellationToken cancellationToken = default)
+    {
+        return _outboundRequestGate.ExecuteAsync(
+            context,
+            token => SendAsync<T>(HttpMethod.Post, url, body, context, headers, token),
+            cancellationToken);
+    }
+
+    private async Task<T> SendAsync<T>(
+        HttpMethod method,
+        string url,
+        object? body,
+        OutboundRequestContext context,
+        Dictionary<string, string>? headers,
+        CancellationToken cancellationToken)
+    {
+        using var request = new HttpRequestMessage(method, url);
+
+        if (body is not null)
+        {
+            var serializedBody = JsonSerializer.Serialize(body, _jsonOptions);
+            request.Content = new StringContent(serializedBody, Encoding.UTF8, "application/json");
+        }
+
+        AddHeaders(request, headers);
+
+        HttpResponseMessage response;
 
         try
         {
-            if (headers != null)
-            {
-                foreach (var header in headers)
-                {
-                    if (string.IsNullOrWhiteSpace(header.Value))
-                        continue;
-
-                    request.Headers.Add(header.Key, header.Value);
-                }
-            }
-
-            var response = await _httpClient.SendAsync(request);
-            response.EnsureSuccessStatusCode();
-
-            var content = await response.Content.ReadAsStringAsync();
-
-            if (string.IsNullOrWhiteSpace(content))
-            {
-                throw new HttpRequestException($"No content returned from GET {url}");
-            }
-
-            var result = JsonSerializer.Deserialize<T>(content, _jsonOptions);
-
-            if (Equals(result, default(T)) || result is null)
-            {
-                throw new HttpRequestException($"Failed to deserialize response from GET {url}");
-            }
-
-            return result;
+            response = await _httpClient.SendAsync(
+                request,
+                HttpCompletionOption.ResponseHeadersRead,
+                cancellationToken);
         }
-        catch (Exception ex)
+        catch (OperationCanceledException exception) when (!cancellationToken.IsCancellationRequested)
         {
-            throw new HttpRequestException($"Failed to GET {url}: {ex.Message}");
+            throw new TransientLeb2Exception("The LEB2 request timed out.", exception);
+        }
+        catch (HttpRequestException exception)
+        {
+            throw new TransientLeb2Exception("The LEB2 request could not connect.", exception);
+        }
+
+        using (response)
+        {
+            if (IsExpiredSessionResponse(response, context))
+            {
+                throw new SessionExpiredException();
+            }
+
+            if (IsTransientStatus(response.StatusCode))
+            {
+                throw new TransientLeb2Exception(
+                    $"LEB2 returned transient HTTP status {(int)response.StatusCode}.");
+            }
+
+            if (!response.IsSuccessStatusCode)
+            {
+                throw new Leb2UpstreamException(
+                    $"LEB2 returned HTTP status {(int)response.StatusCode}.");
+            }
+
+            string responseContent;
+
+            try
+            {
+                responseContent = await response.Content.ReadAsStringAsync(cancellationToken);
+            }
+            catch (OperationCanceledException exception) when (!cancellationToken.IsCancellationRequested)
+            {
+                throw new TransientLeb2Exception(
+                    "The LEB2 response timed out while being read.",
+                    exception);
+            }
+            catch (HttpRequestException exception)
+            {
+                throw new TransientLeb2Exception(
+                    "The LEB2 response could not be read.",
+                    exception);
+            }
+
+            if (LooksLikeHtml(response, responseContent))
+            {
+                if (context.UsesSessionCredential && LooksLikeLoggedOutHtml(responseContent))
+                {
+                    throw new SessionExpiredException();
+                }
+
+                throw new StructuralParseException(
+                    $"{context.Endpoint}.unexpected_html",
+                    "LEB2 returned HTML where structured data was expected.");
+            }
+
+            if (string.IsNullOrWhiteSpace(responseContent))
+            {
+                throw new StructuralParseException(
+                    $"{context.Endpoint}.empty_response",
+                    "LEB2 returned an empty response.");
+            }
+
+            try
+            {
+                var result = JsonSerializer.Deserialize<T>(responseContent, _jsonOptions);
+
+                if (Equals(result, default(T)) || result is null)
+                {
+                    throw new StructuralParseException(
+                        $"{context.Endpoint}.empty_json_result",
+                        "LEB2 returned an empty JSON result.");
+                }
+
+                return result;
+            }
+            catch (JsonException exception)
+            {
+                throw new StructuralParseException(
+                    $"{context.Endpoint}.json_shape",
+                    "LEB2 returned an unexpected JSON response shape.",
+                    exception);
+            }
         }
     }
 
-    public async Task<T> PostAsync<T>(string url, object data, Dictionary<string, string>? headers = null)
+    private static void AddHeaders(
+        HttpRequestMessage request,
+        Dictionary<string, string>? headers)
     {
-        var request = new HttpRequestMessage(HttpMethod.Post, url);
-        var content = JsonSerializer.Serialize(data, _jsonOptions);
-        request.Content = new StringContent(content, Encoding.UTF8, "application/json");
-
-        try
+        if (headers is null)
         {
-            if (headers != null)
-            {
-                foreach (var header in headers)
-                {
-                    if (string.IsNullOrWhiteSpace(header.Value))
-                        continue;
-
-                    request.Headers.Add(header.Key, header.Value);
-                }
-            }
-
-            var response = await _httpClient.SendAsync(request);
-            response.EnsureSuccessStatusCode();
-
-            var responseContent = await response.Content.ReadAsStringAsync();
-
-            var result = JsonSerializer.Deserialize<T>(responseContent, _jsonOptions);
-
-            if (Equals(result, default(T)) || result is null)
-            {
-                throw new HttpRequestException($"Failed to deserialize response from POST {url}");
-            }
-
-            return result;
-
+            return;
         }
-        catch (Exception ex)
+
+        foreach (var header in headers)
         {
-            throw new HttpRequestException($"Failed to POST {url}: {ex.Message}");
+            if (!string.IsNullOrWhiteSpace(header.Value))
+            {
+                request.Headers.TryAddWithoutValidation(header.Key, header.Value);
+            }
         }
     }
 
-        public class FlexibleDateTimeConverter : JsonConverter<DateTime?>
+    private static bool IsExpiredSessionResponse(
+        HttpResponseMessage response,
+        OutboundRequestContext context)
+    {
+        if (!context.UsesSessionCredential)
+        {
+            return false;
+        }
+
+        if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+        {
+            return true;
+        }
+
+        if ((int)response.StatusCode is < 300 or >= 400)
+        {
+            return false;
+        }
+
+        var location = response.Headers.Location;
+
+        if (location is null)
+        {
+            return false;
+        }
+
+        if (!location.IsAbsoluteUri)
+        {
+            return location.OriginalString.Contains("login", StringComparison.OrdinalIgnoreCase);
+        }
+
+        return location.Host.Equals("www.leb2.org", StringComparison.OrdinalIgnoreCase)
+            || location.Host.Equals("signin.leb2.org", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsTransientStatus(HttpStatusCode statusCode)
+    {
+        return statusCode is HttpStatusCode.RequestTimeout
+            or HttpStatusCode.TooManyRequests
+            || (int)statusCode >= 500;
+    }
+
+    private static bool LooksLikeHtml(
+        HttpResponseMessage response,
+        string content)
+    {
+        return response.Content.Headers.ContentType?.MediaType?.Equals(
+                   "text/html",
+                   StringComparison.OrdinalIgnoreCase) == true
+            || content.TrimStart().StartsWith("<!DOCTYPE html", StringComparison.OrdinalIgnoreCase)
+            || content.TrimStart().StartsWith("<html", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool LooksLikeLoggedOutHtml(string content)
+    {
+        return content.Contains("https://www.leb2.org/", StringComparison.OrdinalIgnoreCase)
+            || content.Contains("signin.leb2.org", StringComparison.OrdinalIgnoreCase);
+    }
+
+    public class FlexibleDateTimeConverter : JsonConverter<DateTime?>
 {
     private readonly string[] _dateFormats = new[]
     {

@@ -1,7 +1,19 @@
+using LEB2SCRAPPER.Infrastructure.Contracts.Outbound;
+
 namespace LEB2SCRAPPER.Infrastructure.Contracts.HttpService;
 
 public interface IHttpService
 {
-    public Task<T> GetAsync<T>(string url, Dictionary<string, string>? headers = null);
-    public Task<T> PostAsync<T>(string url, object? body = null, Dictionary<string, string>? headers = null);
+    Task<T> GetAsync<T>(
+        string url,
+        OutboundRequestContext context,
+        Dictionary<string, string>? headers = null,
+        CancellationToken cancellationToken = default);
+
+    Task<T> PostAsync<T>(
+        string url,
+        object? body,
+        OutboundRequestContext context,
+        Dictionary<string, string>? headers = null,
+        CancellationToken cancellationToken = default);
 }

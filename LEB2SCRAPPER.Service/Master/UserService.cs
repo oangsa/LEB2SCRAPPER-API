@@ -10,15 +10,25 @@ public class UserService(ICoreAdapterManager coreAdapterManager) : IUserService
 {
     private readonly IRepositoryManager _repositoryManager = coreAdapterManager.RepositoryManager;
 
-    public async Task<string?> GetCookieAsync(Credentials credentials)
+    public async Task<string?> GetCookieAsync(
+        Credentials credentials,
+        CancellationToken cancellationToken = default)
     {
-        var cookie = await _repositoryManager.ScrapingRepository.GetCookieAsync(credentials);
+        var cookie = await _repositoryManager.ScrapingRepository.GetCookieAsync(
+            credentials,
+            cancellationToken);
+
         return cookie;
     }
 
-    public async Task<User?> GetUserByCredentialsAsync(Credentials credentials)
+    public async Task<User?> GetUserByCredentialsAsync(
+        Credentials credentials,
+        CancellationToken cancellationToken = default)
     {
-        var user = await _repositoryManager.UserRepository.GetUserByCredentialsAsync(credentials);
+        var user = await _repositoryManager.UserRepository.GetUserByCredentialsAsync(
+            credentials,
+            cancellationToken);
+
         return user;
     }
 }

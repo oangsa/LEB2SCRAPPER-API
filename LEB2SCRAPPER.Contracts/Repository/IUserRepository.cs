@@ -5,5 +5,7 @@ namespace LEB2SCRAPPER.Contracts.Repository;
 
 public interface IUserRepository
 {
-    Task<User?> GetUserByCredentialsAsync(Credentials credentials);
+    Task<User?> GetUserByCredentialsAsync(
+        Credentials credentials,
+        CancellationToken cancellationToken = default);
 }
