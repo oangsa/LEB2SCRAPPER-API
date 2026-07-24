@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Http;
 using LEB2SCRAPPER.Service.Contracts.Core;
 using LEB2SCRAPPER.Entity.Models.Authentication;
+using LEB2SCRAPPER.Entity.Models.Response;
 
 
 namespace LEB2SCRAPPER.Presentation.Controller
@@ -16,19 +17,25 @@ namespace LEB2SCRAPPER.Presentation.Controller
 
         [HttpPost("login")]
         [ProducesResponseType(StatusCodes.Status200OK)]
-        [ProducesResponseType(StatusCodes.Status400BadRequest)]
+        [ProducesResponseType(typeof(ValidationErrorResponse), StatusCodes.Status400BadRequest)]
+        [ProducesResponseType(typeof(ErrorResponse), StatusCodes.Status404NotFound)]
         [ProducesResponseType(StatusCodes.Status500InternalServerError)]
-        public async Task<IActionResult> Login([FromBody] Credentials credentials)
+        public async Task<IActionResult> Login(
+            [FromBody] Credentials credentials,
+            CancellationToken cancellationToken)
         {
-            if (credentials == null)
-            {
-                return BadRequest("Invalid credentials.");
-            }
+            var user = await _service.UserService.GetUserByCredentialsAsync(
+                credentials,
+                cancellationToken);
 
-            var user = await _service.UserService.GetUserByCredentialsAsync(credentials);
             if (user == null)
             {
-                return NotFound("User not found.");
+                return NotFound(new ErrorResponse
+                {
+                    Message = "User not found.",
+                    ResponseCode = ApiErrorCodes.ResourceNotFound,
+                    TraceId = HttpContext.TraceIdentifier
+                });
             }
 
             return Ok(new
@@ -44,19 +51,27 @@ namespace LEB2SCRAPPER.Presentation.Controller
 
         [HttpPost("cookie")]
         [ProducesResponseType(StatusCodes.Status200OK)]
-        [ProducesResponseType(StatusCodes.Status400BadRequest)]
+        [ProducesResponseType(typeof(ValidationErrorResponse), StatusCodes.Status400BadRequest)]
+        [ProducesResponseType(typeof(ErrorResponse), StatusCodes.Status404NotFound)]
+        [ProducesResponseType(typeof(ErrorResponse), StatusCodes.Status502BadGateway)]
+        [ProducesResponseType(typeof(ErrorResponse), StatusCodes.Status503ServiceUnavailable)]
         [ProducesResponseType(StatusCodes.Status500InternalServerError)]
-        public async Task<IActionResult> GetCookie([FromBody] Credentials credentials)
+        public async Task<IActionResult> GetCookie(
+            [FromBody] Credentials credentials,
+            CancellationToken cancellationToken)
         {
-            if (credentials == null)
-            {
-                return BadRequest("Invalid credentials.");
-            }
+            var cookie = await _service.UserService.GetCookieAsync(
+                credentials,
+                cancellationToken);
 
-            var cookie = await _service.UserService.GetCookieAsync(credentials);
             if (string.IsNullOrEmpty(cookie))
             {
-                return NotFound("Cookie not found.");
+                return NotFound(new ErrorResponse
+                {
+                    Message = "Cookie not found.",
+                    ResponseCode = ApiErrorCodes.ResourceNotFound,
+                    TraceId = HttpContext.TraceIdentifier
+                });
             }
 
             return Ok(new { Cookie = cookie });

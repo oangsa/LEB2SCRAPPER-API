@@ -13,6 +13,7 @@ COPY LEB2SCRAPPER.Presentation/*.csproj ./LEB2SCRAPPER.Presentation/
 COPY LEB2SCRAPPER.Repository/*.csproj ./LEB2SCRAPPER.Repository/
 COPY LEB2SCRAPPER.Service/*.csproj ./LEB2SCRAPPER.Service/
 COPY LEB2SCRAPPER.Service.Contracts/*.csproj ./LEB2SCRAPPER.Service.Contracts/
+COPY LEB2SCRAPPER.Tests/*.csproj ./LEB2SCRAPPER.Tests/
 
 # Restore dependencies
 RUN dotnet restore

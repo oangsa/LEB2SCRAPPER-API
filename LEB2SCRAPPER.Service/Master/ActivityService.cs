@@ -8,9 +8,18 @@ public class ActivityService(ICoreAdapterManager coreAdapterManager) : IActivity
 {
     private readonly IRepositoryManager _repositoryManager = coreAdapterManager.RepositoryManager;
 
-    public async Task<List<Activity>?> GetActivitiesAsync(int userId, int classId, string token)
+    public async Task<List<Activity>?> GetActivitiesAsync(
+        int userId,
+        int classId,
+        string token,
+        CancellationToken cancellationToken = default)
     {
-        var activities = await _repositoryManager.ActivityRepository.GetActivitiesAsync(userId, classId, token);
+        var activities = await _repositoryManager.ActivityRepository.GetActivitiesAsync(
+            userId,
+            classId,
+            token,
+            cancellationToken);
+
         return activities;
     }
 }

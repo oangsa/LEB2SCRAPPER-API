@@ -1,10 +1,23 @@
+using LEB2SCRAPPER.Authentication;
 using LEB2SCRAPPER.Contracts.Repository.Core;
+using LEB2SCRAPPER.Entity.Models.Response;
+using LEB2SCRAPPER.Infrastructure.Alerting;
+using LEB2SCRAPPER.Infrastructure.Contracts.Alerting;
+using LEB2SCRAPPER.Infrastructure.Contracts.Authentication;
+using LEB2SCRAPPER.Infrastructure.Contracts.HttpService;
+using LEB2SCRAPPER.Infrastructure.Contracts.Outbound;
+using LEB2SCRAPPER.Infrastructure.HttpService;
+using LEB2SCRAPPER.Infrastructure.Outbound;
 using LEB2SCRAPPER.Service;
 using LEB2SCRAPPER.Service.Contracts.Core;
 using LEB2SCRAPPER.Service.Core;
 using LEB2SCRAPPER.Repository.Core;
 using LEB2SCRAPPER.Middleware;
 using LEB2SCRAPPER.Extensions;
+using LEB2SCRAPPER.Swagger;
+using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.OpenApi.Models;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -12,11 +25,69 @@ var builder = WebApplication.CreateBuilder(args);
 // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
 builder.Services.AddOpenApi();
 
-builder.Services.AddControllers().AddApplicationPart(typeof(LEB2SCRAPPER.Presentation.AssemblyReference).Assembly);
+builder.Services
+    .AddControllers()
+    .AddApplicationPart(typeof(LEB2SCRAPPER.Presentation.AssemblyReference).Assembly)
+    .ConfigureApiBehaviorOptions(options =>
+    {
+        options.InvalidModelStateResponseFactory = context =>
+        {
+            var response = new ValidationErrorResponse
+            {
+                Message = "Validation failed.",
+                ResponseCode = ApiErrorCodes.InvalidRequest,
+                TraceId = context.HttpContext.TraceIdentifier,
+                ValidationErrors = context.ModelState
+                    .Where(entry => entry.Value?.Errors.Count > 0)
+                    .ToDictionary(
+                        entry => entry.Key,
+                        entry => entry.Value!.Errors
+                            .Select(error => string.IsNullOrWhiteSpace(error.ErrorMessage)
+                                ? "The supplied value is invalid."
+                                : error.ErrorMessage)
+                            .ToArray())
+            };
+
+            return new BadRequestObjectResult(response);
+        };
+    });
 
 builder.Services.AddScoped<ICoreAdapterManager, CoreAdapterManager>();
 builder.Services.AddScoped<IServiceManager, ServiceManager>();
 builder.Services.AddScoped<IRepositoryManager, RepositoryManager>();
+
+var outboundRequestGateOptions = new OutboundRequestGateOptions();
+builder.Configuration
+    .GetSection("OutboundRequestGate")
+    .Bind(outboundRequestGateOptions);
+
+var emailFailureAlertOptions = new EmailFailureAlertOptions();
+builder.Configuration
+    .GetSection("FailureAlerts:Email")
+    .Bind(emailFailureAlertOptions);
+emailFailureAlertOptions.Validate();
+
+builder.Services.AddSingleton(outboundRequestGateOptions);
+builder.Services.AddSingleton(emailFailureAlertOptions);
+builder.Services.AddSingleton<TimeProvider>(TimeProvider.System);
+builder.Services.AddSingleton<IFailureAlerter, EmailFailureAlerter>();
+builder.Services.AddSingleton<IOutboundRequestGate, OutboundRequestGate>();
+builder.Services
+    .AddHttpClient<IHttpService, HttpService>()
+    .ConfigurePrimaryHttpMessageHandler(Leb2HttpClientHandlerFactory.Create);
+
+builder.Services.AddScoped<Leb2SessionCredential>();
+builder.Services.AddScoped<ILeb2SessionCredential>(
+    serviceProvider => serviceProvider.GetRequiredService<Leb2SessionCredential>());
+builder.Services.AddScoped<ILeb2SessionCredentialStore>(
+    serviceProvider => serviceProvider.GetRequiredService<Leb2SessionCredential>());
+
+builder.Services
+    .AddAuthentication(Leb2BearerDefaults.AuthenticationScheme)
+    .AddScheme<AuthenticationSchemeOptions, Leb2BearerAuthenticationHandler>(
+        Leb2BearerDefaults.AuthenticationScheme,
+        _ => { });
+builder.Services.AddAuthorization();
 
 // Configure CORS
 builder.Services.AddCors(options =>
@@ -30,7 +101,20 @@ builder.Services.AddCors(options =>
 });
 
 builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen();
+builder.Services.AddSwaggerGen(options =>
+{
+    options.AddSecurityDefinition(
+        Leb2BearerDefaults.AuthenticationScheme,
+        new OpenApiSecurityScheme
+        {
+            Type = SecuritySchemeType.Http,
+            Scheme = "bearer",
+            BearerFormat = "Opaque LEB2 session cookie",
+            Description = "Use Authorization: Bearer <session-cookie-value>. "
+                + "Legacy raw Authorization values remain accepted during migration."
+        });
+    options.OperationFilter<AuthorizeOperationFilter>();
+});
 
 var app = builder.Build();
 
@@ -46,6 +130,7 @@ if (app.Environment.IsDevelopment())
 app.UseHttpsRedirection();
 app.UseCors("AllowAll");
 
+app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
 

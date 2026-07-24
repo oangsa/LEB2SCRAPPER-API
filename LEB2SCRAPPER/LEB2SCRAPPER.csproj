@@ -16,6 +16,8 @@
       <ProjectReference Include="..\LEB2SCRAPPER.Presentation\LEB2SCRAPPER.Presentation.csproj" />
         <ProjectReference Include="..\LEB2SCRAPPER.Service.Contracts\LEB2SCRAPPER.Service.Contracts.csproj" />
         <ProjectReference Include="..\LEB2SCRAPPER.Contracts\LEB2SCRAPPER.Contracts.csproj" />
+        <ProjectReference Include="..\LEB2SCRAPPER.Infrastructure\LEB2SCRAPPER.Infrastructure.csproj" />
+        <ProjectReference Include="..\LEB2SCRAPPER.Infrastructure.Contracts\LEB2SCRAPPER.Infrastructure.Contracts.csproj" />
     </ItemGroup>
 
 </Project>

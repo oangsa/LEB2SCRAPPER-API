@@ -5,6 +5,11 @@ namespace LEB2SCRAPPER.Service.Contracts.Master;
 
 public interface IUserService
 {
-    public Task<User?> GetUserByCredentialsAsync(Credentials credentials);
-    public Task<string?> GetCookieAsync(Credentials credentials);
+    Task<User?> GetUserByCredentialsAsync(
+        Credentials credentials,
+        CancellationToken cancellationToken = default);
+
+    Task<string?> GetCookieAsync(
+        Credentials credentials,
+        CancellationToken cancellationToken = default);
 }

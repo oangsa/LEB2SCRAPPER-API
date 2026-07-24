@@ -1,7 +1,7 @@
 using LEB2SCRAPPER.Contracts.Repository;
 using LEB2SCRAPPER.Entity.Models.Activity;
 using LEB2SCRAPPER.Infrastructure.Contracts.HttpService;
-using LEB2SCRAPPER.Infrastructure.HttpService;
+using LEB2SCRAPPER.Infrastructure.Contracts.Outbound;
 using LEB2SCRAPPER.Entity.Exceptions.ActivityCustomException;
 using LEB2SCRAPPER.Entity.Models.Response;
 
@@ -12,12 +12,16 @@ public class ActivityRepository : IActivityRepository
     private readonly IHttpService _httpService;
     private static readonly string BaseUrl = "https://app.leb2.org/api/get/assessment-activities/student";
 
-    public ActivityRepository()
+    public ActivityRepository(IHttpService httpService)
     {
-        _httpService = new HttpService();
+        _httpService = httpService;
     }
 
-    public async Task<List<Activity>> GetActivitiesAsync(int userId, int classId, string token)
+    public async Task<List<Activity>> GetActivitiesAsync(
+        int userId,
+        int classId,
+        string token,
+        CancellationToken cancellationToken = default)
     {
         if (userId <= 0 || classId <= 0 || string.IsNullOrWhiteSpace(token))
         {
@@ -27,16 +31,16 @@ public class ActivityRepository : IActivityRepository
         var url = Url(classId.ToString(), userId.ToString());
         var headers = Getheaders(token);
 
-        try
-        {
-            var response = await _httpService.GetAsync<ActivityResponse>(url, headers);
+        var context = new OutboundRequestContext(
+            Leb2OutboundEndpoints.Activities,
+            UsesSessionCredential: true);
+        var response = await _httpService.GetAsync<ActivityResponse>(
+            url,
+            context,
+            headers,
+            cancellationToken);
 
-            return response.Activities ?? new List<Activity>();
-        }
-        catch (Exception ex)
-        {
-            throw new ActivityCustomExceptionException($"Failed to fetch activities for user {userId} in class {classId}: {ex.Message}");
-        }
+        return response.Activities ?? new List<Activity>();
     }
 
     private static Dictionary<string, string> Getheaders(string token)

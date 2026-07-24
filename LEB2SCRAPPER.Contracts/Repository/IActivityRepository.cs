@@ -4,5 +4,9 @@ namespace LEB2SCRAPPER.Contracts.Repository;
 
 public interface IActivityRepository
 {
-    Task<List<Activity>> GetActivitiesAsync(int userId, int classId, string token);
+    Task<List<Activity>> GetActivitiesAsync(
+        int userId,
+        int classId,
+        string token,
+        CancellationToken cancellationToken = default);
 }
