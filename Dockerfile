@@ -28,27 +28,12 @@ RUN dotnet publish -c Release -o /app --no-restore
 # Runtime stage
 FROM mcr.microsoft.com/dotnet/aspnet:9.0
 
-# Install Chrome and dependencies for Selenium web scraping
+# Install Chromium, ChromeDriver, certificates, fonts, and package dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     chromium \
     chromium-driver \
-    curl \
     fonts-liberation \
-    libnss3 \
-    libxss1 \
-    libgconf-2-4 \
-    libxi6 \
-    libxrandr2 \
-    libasound2 \
-    libpangocairo-1.0-0 \
-    libatk1.0-0 \
-    libcairo-gobject2 \
-    libgtk-3-0 \
-    libgdk-pixbuf2.0-0 \
-    unzip \
-    wget \
-    xvfb \
     && rm -rf /var/lib/apt/lists/*
 
 # Environment variables for Chrome and ASP.NET Core

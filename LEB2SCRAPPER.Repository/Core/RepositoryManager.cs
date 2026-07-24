@@ -3,6 +3,7 @@ using LEB2SCRAPPER.Contracts.Repository;
 using LEB2SCRAPPER.Infrastructure.Contracts.HttpService;
 using LEB2SCRAPPER.Infrastructure.Contracts.Outbound;
 using LEB2SCRAPPER.Repository.Master;
+using LEB2SCRAPPER.Repository.Caching;
 
 namespace LEB2SCRAPPER.Repository.Core
 {
@@ -14,14 +15,25 @@ namespace LEB2SCRAPPER.Repository.Core
 
         public RepositoryManager(
             IHttpService httpService,
-            IOutboundRequestGate outboundRequestGate)
+            IOutboundRequestGate outboundRequestGate,
+            IClientFingerprintProvider clientFingerprintProvider,
+            IStructuralScrapeCache structuralScrapeCache,
+            IActivityResultCache activityResultCache)
         {
             _scrapingRepository = new Lazy<IScrapingRepository>(
-                () => new ScrapingRepository(outboundRequestGate));
+                () => new ScrapingRepository(
+                    outboundRequestGate,
+                    clientFingerprintProvider,
+                    structuralScrapeCache));
             _activityRepository = new Lazy<IActivityRepository>(
-                () => new ActivityRepository(httpService));
+                () => new ActivityRepository(
+                    httpService,
+                    clientFingerprintProvider,
+                    activityResultCache));
             _userRepository = new Lazy<IUserRepository>(
-                () => new UserRepository(httpService));
+                () => new UserRepository(
+                    httpService,
+                    clientFingerprintProvider));
         }
 
         public IScrapingRepository ScrapingRepository => _scrapingRepository.Value;

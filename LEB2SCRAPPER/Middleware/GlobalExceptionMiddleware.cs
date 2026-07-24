@@ -14,11 +14,16 @@ public class GlobalExceptionMiddleware
 {
     private readonly RequestDelegate _next;
     private readonly ILogger<GlobalExceptionMiddleware> _logger;
+    private readonly TimeProvider _timeProvider;
 
-    public GlobalExceptionMiddleware(RequestDelegate next, ILogger<GlobalExceptionMiddleware> logger)
+    public GlobalExceptionMiddleware(
+        RequestDelegate next,
+        ILogger<GlobalExceptionMiddleware> logger,
+        TimeProvider timeProvider)
     {
         _next = next;
         _logger = logger;
+        _timeProvider = timeProvider;
     }
 
     public async Task InvokeAsync(
@@ -54,11 +59,14 @@ public class GlobalExceptionMiddleware
                 message,
                 traceIdentifier);
 
-            await HandleExceptionAsync(context, ex);
+            await HandleExceptionAsync(context, ex, _timeProvider);
         }
     }
 
-    private static async Task HandleExceptionAsync(HttpContext context, Exception exception)
+    private static async Task HandleExceptionAsync(
+        HttpContext context,
+        Exception exception,
+        TimeProvider timeProvider)
     {
         context.Response.ContentType = "application/json";
 
@@ -81,12 +89,27 @@ public class GlobalExceptionMiddleware
             case OutboundRequestBackoffException backoffException:
                 var retryAfter = Math.Max(
                     1,
-                    (int)Math.Ceiling((backoffException.RetryAt - DateTimeOffset.UtcNow).TotalSeconds));
+                    (int)Math.Ceiling((
+                        backoffException.RetryAt
+                        - timeProvider.GetUtcNow()).TotalSeconds));
 
                 response.Message = "LEB2 access is temporarily paused after recent failures.";
                 response.ResponseCode = ApiErrorCodes.RequestBackoffActive;
                 context.Response.StatusCode = (int)HttpStatusCode.ServiceUnavailable;
                 context.Response.Headers.RetryAfter = retryAfter.ToString();
+                break;
+
+            case OutboundClientThrottleException throttleException:
+                var clientRetryAfter = Math.Max(
+                    1,
+                    (int)Math.Ceiling((
+                        throttleException.RetryAt
+                        - timeProvider.GetUtcNow()).TotalSeconds));
+
+                response.Message = "This client has too many queued LEB2 requests.";
+                response.ResponseCode = ApiErrorCodes.ClientThrottleActive;
+                context.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+                context.Response.Headers.RetryAfter = clientRetryAfter.ToString();
                 break;
 
             case StructuralParseException:

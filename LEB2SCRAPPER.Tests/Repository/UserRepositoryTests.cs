@@ -18,7 +18,9 @@ public class UserRepositoryTests
             Success = true,
             Result = new Result()
         });
-        var repository = new UserRepository(httpService);
+        var repository = new UserRepository(
+            httpService,
+            new StubFingerprintProvider());
 
         var exception = await Assert.ThrowsAsync<StructuralParseException>(() =>
             repository.GetUserByCredentialsAsync(CreateCredentials()));
@@ -33,7 +35,9 @@ public class UserRepositoryTests
         {
             Success = false
         });
-        var repository = new UserRepository(httpService);
+        var repository = new UserRepository(
+            httpService,
+            new StubFingerprintProvider());
 
         await Assert.ThrowsAsync<UserNotFoundException>(() =>
             repository.GetUserByCredentialsAsync(CreateCredentials()));
@@ -74,6 +78,19 @@ public class UserRepositoryTests
             CancellationToken cancellationToken = default)
         {
             return Task.FromResult((T)(object)_response);
+        }
+    }
+
+    private sealed class StubFingerprintProvider : IClientFingerprintProvider
+    {
+        public string CreateForSession(string sessionValue)
+        {
+            return "session-client";
+        }
+
+        public string CreateForUsername(string username)
+        {
+            return "username-client";
         }
     }
 }

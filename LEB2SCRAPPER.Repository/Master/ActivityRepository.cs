@@ -10,11 +10,18 @@ namespace LEB2SCRAPPER.Repository.Master;
 public class ActivityRepository : IActivityRepository
 {
     private readonly IHttpService _httpService;
+    private readonly IClientFingerprintProvider _clientFingerprintProvider;
+    private readonly IActivityResultCache _activityResultCache;
     private static readonly string BaseUrl = "https://app.leb2.org/api/get/assessment-activities/student";
 
-    public ActivityRepository(IHttpService httpService)
+    public ActivityRepository(
+        IHttpService httpService,
+        IClientFingerprintProvider clientFingerprintProvider,
+        IActivityResultCache activityResultCache)
     {
         _httpService = httpService;
+        _clientFingerprintProvider = clientFingerprintProvider;
+        _activityResultCache = activityResultCache;
     }
 
     public async Task<List<Activity>> GetActivitiesAsync(
@@ -28,19 +35,27 @@ public class ActivityRepository : IActivityRepository
             throw new ActivityCustomExceptionException("User ID, Class ID, and Token must be provided.");
         }
 
-        var url = Url(classId.ToString(), userId.ToString());
-        var headers = Getheaders(token);
-
+        var clientKey = _clientFingerprintProvider.CreateForSession(token);
         var context = new OutboundRequestContext(
             Leb2OutboundEndpoints.Activities,
+            clientKey,
             UsesSessionCredential: true);
-        var response = await _httpService.GetAsync<ActivityResponse>(
-            url,
-            context,
-            headers,
-            cancellationToken);
 
-        return response.Activities ?? new List<Activity>();
+        return await _activityResultCache.GetActivitiesAsync(
+            clientKey,
+            userId,
+            classId,
+            async requestToken =>
+            {
+                var response = await _httpService.GetAsync<ActivityResponse>(
+                    Url(classId.ToString(), userId.ToString()),
+                    context,
+                    Getheaders(token),
+                    requestToken);
+
+                return response.Activities ?? new List<Activity>();
+            },
+            cancellationToken);
     }
 
     private static Dictionary<string, string> Getheaders(string token)

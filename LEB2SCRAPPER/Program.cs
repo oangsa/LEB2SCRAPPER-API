@@ -1,4 +1,5 @@
 using LEB2SCRAPPER.Authentication;
+using LEB2SCRAPPER.Contracts.Repository;
 using LEB2SCRAPPER.Contracts.Repository.Core;
 using LEB2SCRAPPER.Entity.Models.Response;
 using LEB2SCRAPPER.Infrastructure.Alerting;
@@ -12,6 +13,7 @@ using LEB2SCRAPPER.Service;
 using LEB2SCRAPPER.Service.Contracts.Core;
 using LEB2SCRAPPER.Service.Core;
 using LEB2SCRAPPER.Repository.Core;
+using LEB2SCRAPPER.Repository.Caching;
 using LEB2SCRAPPER.Middleware;
 using LEB2SCRAPPER.Extensions;
 using LEB2SCRAPPER.Swagger;
@@ -67,11 +69,30 @@ builder.Configuration
     .Bind(emailFailureAlertOptions);
 emailFailureAlertOptions.Validate();
 
+var structuralScrapeCacheOptions = new StructuralScrapeCacheOptions();
+builder.Configuration
+    .GetSection("StructuralScrapeCache")
+    .Bind(structuralScrapeCacheOptions);
+
+var activityResultCacheOptions = new ActivityResultCacheOptions();
+builder.Configuration
+    .GetSection("ActivityResultCache")
+    .Bind(activityResultCacheOptions);
+
 builder.Services.AddSingleton(outboundRequestGateOptions);
 builder.Services.AddSingleton(emailFailureAlertOptions);
+builder.Services.AddSingleton(structuralScrapeCacheOptions);
+builder.Services.AddSingleton(activityResultCacheOptions);
 builder.Services.AddSingleton<TimeProvider>(TimeProvider.System);
 builder.Services.AddSingleton<IFailureAlerter, EmailFailureAlerter>();
-builder.Services.AddSingleton<IOutboundRequestGate, OutboundRequestGate>();
+builder.Services.AddSingleton<IClientFingerprintProvider, HmacClientFingerprintProvider>();
+builder.Services.AddSingleton<IStructuralScrapeCache, StructuralScrapeCache>();
+builder.Services.AddSingleton<IActivityResultCache, ActivityResultCache>();
+builder.Services.AddSingleton<OutboundRequestGate>();
+builder.Services.AddSingleton<IOutboundRequestGate>(
+    serviceProvider => serviceProvider.GetRequiredService<OutboundRequestGate>());
+builder.Services.AddSingleton<IOutboundRequestStatusReader>(
+    serviceProvider => serviceProvider.GetRequiredService<OutboundRequestGate>());
 builder.Services
     .AddHttpClient<IHttpService, HttpService>()
     .ConfigurePrimaryHttpMessageHandler(Leb2HttpClientHandlerFactory.Create);
@@ -135,3 +156,7 @@ app.UseAuthorization();
 app.MapControllers();
 
 await app.RunAsync();
+
+public partial class Program
+{
+}

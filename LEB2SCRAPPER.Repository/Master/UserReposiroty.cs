@@ -13,18 +13,24 @@ namespace LEB2SCRAPPER.Repository.Master;
 public class UserRepository : IUserRepository
 {
     private readonly IHttpService _httpService;
+    private readonly IClientFingerprintProvider _clientFingerprintProvider;
     private static readonly string BaseUrl = "https://leb2-mcs-api-production.leb2.org/public/login/v1/login";
 
-    public UserRepository(IHttpService httpService)
+    public UserRepository(
+        IHttpService httpService,
+        IClientFingerprintProvider clientFingerprintProvider)
     {
         _httpService = httpService;
+        _clientFingerprintProvider = clientFingerprintProvider;
     }
 
     public async Task<User?> GetUserByCredentialsAsync(
         Credentials credentials,
         CancellationToken cancellationToken = default)
     {
-        var context = new OutboundRequestContext(Leb2OutboundEndpoints.UserLogin);
+        var context = new OutboundRequestContext(
+            Leb2OutboundEndpoints.UserLogin,
+            _clientFingerprintProvider.CreateForUsername(credentials.Username));
         var response = await _httpService.PostAsync<LoginResponse>(
             BaseUrl,
             credentials,

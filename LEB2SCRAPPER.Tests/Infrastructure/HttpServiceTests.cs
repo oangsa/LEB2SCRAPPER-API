@@ -24,7 +24,7 @@ public class HttpServiceTests
 
         var result = await service.GetAsync<TestResponse>(
             "https://app.leb2.org/api/test",
-            new OutboundRequestContext("test"));
+            new OutboundRequestContext("test", "client"));
 
         Assert.Equal(42, result.Value);
     }
@@ -47,6 +47,7 @@ public class HttpServiceTests
                 "https://app.leb2.org/api/test",
                 new OutboundRequestContext(
                     "test",
+                    "client",
                     UsesSessionCredential: true)));
     }
 
@@ -60,7 +61,7 @@ public class HttpServiceTests
         await Assert.ThrowsAsync<TransientLeb2Exception>(() =>
             service.GetAsync<TestResponse>(
                 "https://app.leb2.org/api/test",
-                new OutboundRequestContext("test")));
+                new OutboundRequestContext("test", "client")));
     }
 
     [Fact]
@@ -79,7 +80,7 @@ public class HttpServiceTests
         await Assert.ThrowsAsync<StructuralParseException>(() =>
             service.GetAsync<ActivityResponse>(
                 "https://app.leb2.org/api/test",
-                new OutboundRequestContext("activities")));
+                new OutboundRequestContext("activities", "client")));
     }
 
     [Fact]
@@ -98,7 +99,7 @@ public class HttpServiceTests
         await Assert.ThrowsAsync<StructuralParseException>(() =>
             service.GetAsync<LoginResponse>(
                 "https://leb2-mcs-api-production.leb2.org/public/login/v1/login",
-                new OutboundRequestContext("user-login")));
+                new OutboundRequestContext("user-login", "client")));
     }
 
     [Fact]
@@ -127,7 +128,7 @@ public class HttpServiceTests
         var result = await service.PostAsync<LoginResponse>(
             "https://leb2-mcs-api-production.leb2.org/public/login/v1/login",
             body: null,
-            new OutboundRequestContext("user-login"));
+            new OutboundRequestContext("user-login", "client"));
 
         Assert.Equal("fake-student-id", result.Result?.StudentId);
         Assert.Equal("fake-expiration", result.Result?.RadiusExpiration);
@@ -145,7 +146,7 @@ public class HttpServiceTests
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
             service.GetAsync<TestResponse>(
                 "https://app.leb2.org/api/test",
-                new OutboundRequestContext("test"),
+                new OutboundRequestContext("test", "client"),
                 cancellationToken: cancellationSource.Token));
     }
 

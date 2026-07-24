@@ -3,6 +3,7 @@ namespace LEB2SCRAPPER.Entity.Models.Response;
 public static class ApiErrorCodes
 {
     public const string AuthenticationRequired = "AUTHENTICATION_REQUIRED";
+    public const string ClientThrottleActive = "CLIENT_THROTTLE_ACTIVE";
     public const string InvalidRequest = "INVALID_REQUEST";
     public const string Leb2Unavailable = "LEB2_UNAVAILABLE";
     public const string RequestBackoffActive = "REQUEST_BACKOFF_ACTIVE";

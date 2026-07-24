@@ -1,10 +1,10 @@
-using System.Text.RegularExpressions;
 using LEB2SCRAPPER.Contracts.Repository;
 using LEB2SCRAPPER.Entity.Exceptions.Leb2Integration;
 using LEB2SCRAPPER.Entity.Exceptions.ScrapingCustomException;
 using LEB2SCRAPPER.Entity.Models.Authentication;
 using LEB2SCRAPPER.Entity.Models.Class;
 using LEB2SCRAPPER.Infrastructure.Contracts.Outbound;
+using LEB2SCRAPPER.Repository.Parsing;
 using OpenQA.Selenium;
 using OpenQA.Selenium.Chrome;
 using OpenQA.Selenium.Support.UI;
@@ -19,10 +19,18 @@ public class ScrapingRepository : IScrapingRepository
     private static readonly TimeSpan ElementWaitTimeout = TimeSpan.FromSeconds(10);
     private readonly ChromeOptions _chromeOptions = new();
     private readonly IOutboundRequestGate _outboundRequestGate;
+    private readonly IClientFingerprintProvider _clientFingerprintProvider;
+    private readonly IStructuralScrapeCache _structuralScrapeCache;
+    private readonly Leb2RenderedPageParser _renderedPageParser = new();
 
-    public ScrapingRepository(IOutboundRequestGate outboundRequestGate)
+    public ScrapingRepository(
+        IOutboundRequestGate outboundRequestGate,
+        IClientFingerprintProvider clientFingerprintProvider,
+        IStructuralScrapeCache structuralScrapeCache)
     {
         _outboundRequestGate = outboundRequestGate;
+        _clientFingerprintProvider = clientFingerprintProvider;
+        _structuralScrapeCache = structuralScrapeCache;
         _chromeOptions.AddArgument("--headless=new");
         _chromeOptions.AddArgument("--disable-gpu");
         _chromeOptions.AddArgument("--no-sandbox");
@@ -46,7 +54,9 @@ public class ScrapingRepository : IScrapingRepository
             throw new ScrapingCustomException("Credentials must be provided.");
         }
 
-        var context = new OutboundRequestContext(Leb2OutboundEndpoints.CookieLogin);
+        var context = new OutboundRequestContext(
+            Leb2OutboundEndpoints.CookieLogin,
+            _clientFingerprintProvider.CreateForUsername(credentials.Username));
 
         return _outboundRequestGate.ExecuteAsync(
             context,
@@ -63,11 +73,17 @@ public class ScrapingRepository : IScrapingRepository
             throw new ScrapingCustomException("Token must be provided.");
         }
 
-        var context = CreateSessionContext(Leb2OutboundEndpoints.Semesters);
+        var clientKey = _clientFingerprintProvider.CreateForSession(token);
+        var context = CreateSessionContext(
+            Leb2OutboundEndpoints.Semesters,
+            clientKey);
 
-        return _outboundRequestGate.ExecuteAsync(
-            context,
-            requestToken => GetSemesterIdsCoreAsync(token, requestToken),
+        return _structuralScrapeCache.GetSemesterIdsAsync(
+            clientKey,
+            requestToken => _outboundRequestGate.ExecuteAsync(
+                context,
+                gateToken => GetSemesterIdsCoreAsync(token, gateToken),
+                requestToken),
             cancellationToken);
     }
 
@@ -82,11 +98,21 @@ public class ScrapingRepository : IScrapingRepository
                 "Semester ID and token must be provided.");
         }
 
-        var context = CreateSessionContext(Leb2OutboundEndpoints.Classes);
+        var clientKey = _clientFingerprintProvider.CreateForSession(token);
+        var context = CreateSessionContext(
+            Leb2OutboundEndpoints.Classes,
+            clientKey);
 
-        return _outboundRequestGate.ExecuteAsync(
-            context,
-            requestToken => GetClassesCoreAsync(semesterId, token, requestToken),
+        return _structuralScrapeCache.GetClassesAsync(
+            clientKey,
+            semesterId,
+            requestToken => _outboundRequestGate.ExecuteAsync(
+                context,
+                gateToken => GetClassesCoreAsync(
+                    semesterId,
+                    token,
+                    gateToken),
+                requestToken),
             cancellationToken);
     }
 
@@ -312,11 +338,13 @@ public class ScrapingRepository : IScrapingRepository
         }
     }
 
-    private static OutboundRequestContext CreateSessionContext(
-        string endpoint)
+    private OutboundRequestContext CreateSessionContext(
+        string endpoint,
+        string clientKey)
     {
         return new OutboundRequestContext(
             endpoint,
+            clientKey,
             UsesSessionCredential: true);
     }
 
@@ -357,20 +385,18 @@ public class ScrapingRepository : IScrapingRepository
             && uri.Host.Equals("app.leb2.org", StringComparison.OrdinalIgnoreCase);
     }
 
-    private static async Task<List<int>> ExtractSemesterIdsAsync(
+    private async Task<List<int>> ExtractSemesterIdsAsync(
         IWebDriver driver,
         CancellationToken cancellationToken)
     {
-        IReadOnlyCollection<IWebElement> semesterLinks;
-
         try
         {
             var wait = new WebDriverWait(driver, ElementWaitTimeout);
-            semesterLinks = await RunDriverOperationAsync(
+            await RunDriverOperationAsync(
                 () => wait.Until(d =>
                 {
                     var links = d.FindElements(By.CssSelector("a[href*='semester_id=']"));
-                    return links.Count > 0 ? links : null;
+                    return links.Count > 0;
                 }),
                 cancellationToken);
         }
@@ -386,51 +412,25 @@ public class ScrapingRepository : IScrapingRepository
                 exception);
         }
 
-        var semesterIds = new List<int>();
+        var pageSource = await RunDriverOperationAsync(
+            () => driver.PageSource,
+            cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
 
-        foreach (var link in semesterLinks)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            var href = link.GetAttribute("href");
-
-            if (string.IsNullOrEmpty(href))
-            {
-                continue;
-            }
-
-            var match = Regex.Match(href, @"semester_id=(\d+)");
-
-            if (match.Success && int.TryParse(match.Groups[1].Value, out var semesterId))
-            {
-                semesterIds.Add(semesterId);
-            }
-        }
-
-        semesterIds = semesterIds.Distinct().ToList();
-
-        if (semesterIds.Count == 0)
-        {
-            throw new StructuralParseException(
-                "semesters.semester_link_values",
-                "The semester links did not contain recognizable IDs.");
-        }
-
-        return semesterIds;
+        return _renderedPageParser.ParseSemesterIds(pageSource);
     }
 
-    private static async Task<List<ClassInfo>?> ExtractClassesAsync(
+    private async Task<List<ClassInfo>?> ExtractClassesAsync(
         IWebDriver driver,
         CancellationToken cancellationToken)
     {
-        IWebElement publishedContainer;
-
         try
         {
             var wait = new WebDriverWait(driver, ElementWaitTimeout);
-            publishedContainer = await RunDriverOperationAsync(
+            await RunDriverOperationAsync(
                 () => wait.Until(d => d.FindElements(By.CssSelector(
                         "#classListMain .class-list__row.class-publish"))
-                    .FirstOrDefault()),
+                    .Count > 0),
                 cancellationToken);
         }
         catch (WebDriverTimeoutException) when (cancellationToken.IsCancellationRequested)
@@ -445,62 +445,12 @@ public class ScrapingRepository : IScrapingRepository
                 exception);
         }
 
-        var publishedItems = await RunDriverOperationAsync(
-            () => publishedContainer.FindElements(By.XPath("./*")),
+        var pageSource = await RunDriverOperationAsync(
+            () => driver.PageSource,
             cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
 
-        if (publishedItems.Count == 0)
-        {
-            return new List<ClassInfo>();
-        }
-
-        var classes = new List<ClassInfo>();
-
-        foreach (var publishedItem in publishedItems)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            var classCards = await RunDriverOperationAsync(
-                () => publishedItem.FindElements(By.XPath(
-                    "self::div[contains(concat(' ', normalize-space(@class), ' '), ' whole-card ')]"
-                    + "/div[contains(concat(' ', normalize-space(@class), ' '), ' class-card ')"
-                    + " and contains(concat(' ', normalize-space(@class), ' '), ' card ')"
-                    + " and @name and @data-url]")),
-                cancellationToken);
-
-            if (classCards.Count != 1)
-            {
-                throw new StructuralParseException(
-                    "classes.class_card_pairing",
-                    "LEB2 returned malformed published class card markup.");
-            }
-
-            var classCard = classCards.Single();
-            var classCodes = await RunDriverOperationAsync(
-                () => classCard.FindElements(By.CssSelector(
-                    "p[name='code'].card-title-class-list")),
-                cancellationToken);
-            var classIdWithName = classCard.GetAttribute("name");
-            var idMatch = Regex.Match(classIdWithName ?? string.Empty, @"^card-(\d+)$");
-
-            if (classCodes.Count != 1
-                || string.IsNullOrWhiteSpace(classIdWithName)
-                || !idMatch.Success
-                || !int.TryParse(idMatch.Groups[1].Value, out var classId)
-                || string.IsNullOrWhiteSpace(classCodes.Single().Text))
-            {
-                throw new StructuralParseException(
-                    "classes.class_card_values",
-                    "The class cards did not contain recognizable class data.");
-            }
-
-            classes.Add(new ClassInfo
-            {
-                Id = classId,
-                Name = classCodes.Single().Text.Trim()
-            });
-        }
-
-        return classes;
+        return _renderedPageParser.ParseClasses(pageSource);
     }
 
     private static Task<T> RunDriverOperationAsync<T>(

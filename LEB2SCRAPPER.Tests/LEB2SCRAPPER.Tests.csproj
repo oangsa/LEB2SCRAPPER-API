@@ -9,6 +9,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="9.0.5" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.9.0" />
     <PackageReference Include="xunit" Version="2.7.0" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.5.7">
@@ -19,9 +20,13 @@
 
   <ItemGroup>
     <ProjectReference Include="..\LEB2SCRAPPER\LEB2SCRAPPER.csproj" />
+    <ProjectReference Include="..\LEB2SCRAPPER.Contracts\LEB2SCRAPPER.Contracts.csproj" />
     <ProjectReference Include="..\LEB2SCRAPPER.Entity\LEB2SCRAPPER.Entity.csproj" />
     <ProjectReference Include="..\LEB2SCRAPPER.Infrastructure\LEB2SCRAPPER.Infrastructure.csproj" />
     <ProjectReference Include="..\LEB2SCRAPPER.Infrastructure.Contracts\LEB2SCRAPPER.Infrastructure.Contracts.csproj" />
+    <ProjectReference Include="..\LEB2SCRAPPER.Repository\LEB2SCRAPPER.Repository.csproj" />
+    <ProjectReference Include="..\LEB2SCRAPPER.Service\LEB2SCRAPPER.Service.csproj" />
+    <ProjectReference Include="..\LEB2SCRAPPER.Service.Contracts\LEB2SCRAPPER.Service.Contracts.csproj" />
   </ItemGroup>
 
 </Project>

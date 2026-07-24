@@ -1,6 +1,7 @@
 using LEB2SCRAPPER.Service.Contracts.Core;
 using LEB2SCRAPPER.Service.Contracts.Master;
 using LEB2SCRAPPER.Service.Master;
+using Microsoft.Extensions.Logging;
 
 namespace LEB2SCRAPPER.Service.Core;
 
@@ -11,9 +12,12 @@ public class ServiceManager : IServiceManager
     private readonly Lazy<IClassService> _classService;
     private readonly Lazy<ISemesterService> _semesterService;
 
-    public ServiceManager(ICoreAdapterManager coreAdapterManager)
+    public ServiceManager(
+        ICoreAdapterManager coreAdapterManager,
+        ILogger<ActivityService> activityLogger)
     {
-        _activityService = new Lazy<IActivityService>(() => new ActivityService(coreAdapterManager));
+        _activityService = new Lazy<IActivityService>(
+            () => new ActivityService(coreAdapterManager, activityLogger));
         _userService = new Lazy<IUserService>(() => new UserService(coreAdapterManager));
         _classService = new Lazy<IClassService>(() => new ClassService(coreAdapterManager));
         _semesterService = new Lazy<ISemesterService>(() => new SemesterService(coreAdapterManager));

@@ -78,7 +78,8 @@ public class GlobalExceptionMiddlewareTests
         cancellationSource.Cancel();
         var middleware = new GlobalExceptionMiddleware(
             _ => throw new OperationCanceledException(cancellationSource.Token),
-            NullLogger<GlobalExceptionMiddleware>.Instance);
+            NullLogger<GlobalExceptionMiddleware>.Instance,
+            TimeProvider.System);
         var context = new DefaultHttpContext
         {
             RequestAborted = cancellationSource.Token
@@ -100,7 +101,8 @@ public class GlobalExceptionMiddlewareTests
     {
         var middleware = new GlobalExceptionMiddleware(
             _ => throw exception,
-            logger ?? NullLogger<GlobalExceptionMiddleware>.Instance);
+            logger ?? NullLogger<GlobalExceptionMiddleware>.Instance,
+            TimeProvider.System);
         var context = new DefaultHttpContext();
         context.Response.Body = new MemoryStream();
 

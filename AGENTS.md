@@ -290,9 +290,14 @@ The default container runs as Production, so its Swagger UI is not enabled unles
 - `GET /Class/{id}`
   - Requires the LEB2 session value in the `Authorization` header.
   - `id` is the semester ID.
-- `POST /Activity`
-  - Requires `userId` and `classId` in the request body.
-  - Requires the LEB2 session value in the `Authorization` header.
+- `GET /Activity/{semesterId}/{classId}`
+  - Returns activities for one class.
+  - Requires a positive user ID in the `X-LEB2-USER-ID` header.
+  - Requires the LEB2 session value as a bearer credential in the `Authorization` header.
+- `GET /Activity/{semesterId}`
+  - Returns activities for every class in one semester.
+  - Requires a positive user ID in the `X-LEB2-USER-ID` header.
+  - Requires the LEB2 session value as a bearer credential in the `Authorization` header.
 
 The current `Authorization` header is passed through as an LEB2 session/cookie value. It is not a JWT authentication implementation and should not be documented or treated as one.
 
@@ -303,7 +308,8 @@ The current `Authorization` header is passed through as an LEB2 session/cookie v
 3. Treat the returned cookie as a secret.
 4. Send that value in the `Authorization` header when requesting semesters.
 5. Use a semester ID to request classes.
-6. Use the user ID and class ID to request activities.
+6. Send the user ID in `X-LEB2-USER-ID` and use the semester ID, plus an
+   optional class ID, to request activities.
 
 External LEB2 HTML, selectors, payloads, and response shapes can change independently of this repository. When an integration fails, inspect the current external contract before changing local models or scraping logic.
 
@@ -327,9 +333,10 @@ Some existing project references are broader than this ideal. Do not use those b
 
 ### Request lifecycle example
 
-Activity request (`POST /Activity`):
+Class activity request (`GET /Activity/{semesterId}/{classId}`):
 
-1. `ActivityController` receives and validates `ActivityDto` and the `Authorization` header.
+1. `ActivityController` validates the route IDs, `X-LEB2-USER-ID`, and the
+   `Authorization` header.
 2. The controller calls `IServiceManager.ActivityService`.
 3. `ActivityService` delegates through `IRepositoryManager.ActivityRepository`.
 4. `ActivityRepository` calls the LEB2 activities endpoint through `IHttpService`.
