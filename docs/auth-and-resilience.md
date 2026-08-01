@@ -46,10 +46,10 @@ never moves a key from one user to another.
 
 ## Supabase connection
 
-The backend uses direct Npgsql access through the configuration key
-`ConnectionStrings:Supabase`. It never creates tables or runs migrations. Keep the
-connection string in user secrets locally and Secret Manager in Cloud Run; never
-commit it.
+The backend uses direct Npgsql access through `ConnectionStrings:Supabase` in local
+development and `ConnectionStrings:Production` in Production. It never creates
+tables or runs migrations. Keep the local connection string in user secrets and the
+production connection string in Secret Manager; never commit either value.
 
 ## Request authentication
 

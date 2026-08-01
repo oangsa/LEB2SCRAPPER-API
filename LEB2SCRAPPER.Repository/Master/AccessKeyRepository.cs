@@ -236,7 +236,7 @@ public sealed class AccessKeyRepository : IAccessKeyRepository
             throw new AccessKeyDatabaseException(
                 false,
                 new InvalidOperationException(
-                    "ConnectionStrings:Supabase is not configured."));
+                    "The access-key database connection is not configured."));
         }
 
         var connection = new NpgsqlConnection(_connectionString);

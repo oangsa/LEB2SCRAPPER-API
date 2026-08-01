@@ -29,28 +29,33 @@ using Microsoft.OpenApi.Models;
 
 var builder = WebApplication.CreateBuilder(args);
 
-var supabaseConnectionString = builder.Configuration.GetConnectionString("Supabase");
+var connectionStringName = builder.Environment.IsProduction()
+    ? "Production"
+    : "Supabase";
+var databaseConnectionString = builder.Configuration.GetConnectionString(
+    connectionStringName);
+var connectionStringConfigurationKey = $"ConnectionStrings:{connectionStringName}";
 
 if (builder.Environment.IsProduction()
-    && string.IsNullOrWhiteSpace(supabaseConnectionString))
+    && string.IsNullOrWhiteSpace(databaseConnectionString))
 {
     throw new InvalidOperationException(
-        "ConnectionStrings:Supabase is required in Production.");
+        $"{connectionStringConfigurationKey} is required in Production.");
 }
 
-if (!string.IsNullOrWhiteSpace(supabaseConnectionString))
+if (!string.IsNullOrWhiteSpace(databaseConnectionString))
 {
     try
     {
         _ = new DbConnectionStringBuilder
         {
-            ConnectionString = supabaseConnectionString
+            ConnectionString = databaseConnectionString
         };
     }
     catch (ArgumentException)
     {
         throw new InvalidOperationException(
-            "ConnectionStrings:Supabase is not a valid connection string.");
+            $"{connectionStringConfigurationKey} is not a valid connection string.");
     }
 }
 
@@ -89,7 +94,7 @@ builder.Services.AddScoped<ICoreAdapterManager, CoreAdapterManager>();
 builder.Services.AddScoped<IServiceManager, ServiceManager>();
 builder.Services.AddScoped<IRepositoryManager, RepositoryManager>();
 builder.Services.AddScoped<IAccessKeyRepository>(
-    _ => new AccessKeyRepository(supabaseConnectionString));
+    _ => new AccessKeyRepository(databaseConnectionString));
 builder.Services.AddScoped<IAccessKeyService, AccessKeyService>();
 builder.Services.AddScoped<AccessKeyRequestContext>();
 

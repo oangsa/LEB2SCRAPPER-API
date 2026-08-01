@@ -77,10 +77,10 @@ variables are appropriate.
 
 ## Supabase database connection
 
-The application expects the PostgreSQL connection string in:
+The Production application expects the PostgreSQL connection string in:
 
 ```text
-ConnectionStrings__Supabase
+ConnectionStrings__Production
 ```
 
 Open the Supabase project dashboard's **Connect** or database connection panel and
@@ -181,7 +181,7 @@ export. The runtime account does not need broad project roles, but it does need 
 Secret Manager accessor role shown below.
 
 Create the Secret Manager secret and add the connection string from a protected local
-file. The file must contain only the value for `ConnectionStrings:Supabase`; never
+file. The file must contain only the value for `ConnectionStrings:Production`; never
 commit it:
 
 ```bash

@@ -29,8 +29,9 @@ Application startup begins in `LEB2SCRAPPER/Program.cs`:
 2. Controllers from `LEB2SCRAPPER.Presentation` are registered through an application part.
 3. `ICoreAdapterManager`, `IServiceManager`, `IRepositoryManager`, the access-key
    repository/service, and request context are registered as scoped dependencies.
-4. Production requires a syntactically valid `ConnectionStrings:Supabase` value;
-   no tables or migrations are created.
+4. Production requires a syntactically valid `ConnectionStrings:Production` value;
+   Development uses `ConnectionStrings:Supabase`; no tables or migrations are
+   created.
 5. OpenAPI, Swagger, permissive CORS, and the global exception middleware are configured.
 6. Controller routes are mapped and the application starts.
 
@@ -260,10 +261,10 @@ Entities must remain free of ASP.NET controller behavior, Selenium behavior, and
 - Chrome or Chromium compatible with the configured Selenium driver
 - Network access to the LEB2 sign-in, application, and public API endpoints
 
-The application configuration key `ConnectionStrings:Supabase` is required in
+The application configuration key `ConnectionStrings:Production` is required in
 Production. ASP.NET Core maps it from the environment variable
-`ConnectionStrings__Supabase`. Development can use the host project's user-secrets
-store.
+`ConnectionStrings__Production`. Development uses `ConnectionStrings:Supabase` and
+can use the host project's user-secrets store.
 
 Useful ASP.NET Core environment variables include:
 
@@ -271,8 +272,9 @@ Useful ASP.NET Core environment variables include:
   - Use `Development` to enable Swagger.
 - `ASPNETCORE_URLS`
   - Overrides the listening URLs when needed.
-- `ConnectionStrings__Supabase`
-  - PostgreSQL connection string for the existing Supabase database. Never commit it.
+- `ConnectionStrings__Production`
+  - Production PostgreSQL connection string for the existing Supabase database.
+    Never commit it.
 
 Never commit credentials, LEB2 cookies, access tokens, or other secrets to source control or configuration files.
 
