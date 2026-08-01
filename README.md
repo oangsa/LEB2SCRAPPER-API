@@ -5,3 +5,13 @@ per-request bearer contract, error codes, backoff behavior, and alert configurat
 
 See [Cloud Run continuous deployment](docs/cloud-run-continuous-deployment.md) for
 the GitHub Actions workflow and one-time Workload Identity Federation setup.
+
+Production Cloud Run uses at most one active application instance. Caches,
+throttling, backoff, incident correlation, and health state are process-local;
+horizontal scaling requires distributed coordination.
+
+## License and security reporting
+
+This project is licensed under [Apache-2.0](LICENSE). Report non-confidential
+security problems through [SECURITY.md](SECURITY.md): GitHub Issues are public
+and are not a channel for confidential information.

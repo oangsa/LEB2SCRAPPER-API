@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using LEB2SCRAPPER.Contracts.Repository;
 using LEB2SCRAPPER.Contracts.Repository.Core;
+using LEB2SCRAPPER.Entity.Exceptions.Leb2Integration;
 using LEB2SCRAPPER.Entity.Models.Activity;
 using LEB2SCRAPPER.Entity.Models.Authentication;
 using LEB2SCRAPPER.Entity.Models.Class;
@@ -337,7 +338,13 @@ public class ActivityServiceTests
             new() { Id = 42, ClassId = 10 }
         };
         var service = CreateService(
-            (_, _, _) => Task.FromResult<List<ClassInfo>?>([]),
+            (semesterId, token, _) =>
+            {
+                Assert.Equal(10, semesterId);
+                Assert.Equal("fake-session", token);
+                return Task.FromResult<List<ClassInfo>?>(
+                    [new ClassInfo { Id = 10 }]);
+            },
             (userId, classId, token, _) =>
             {
                 Assert.Equal(123, userId);
@@ -349,9 +356,76 @@ public class ActivityServiceTests
         var result = await service.GetActivitiesAsync(
             123,
             10,
+            10,
             "fake-session");
 
         Assert.Same(expected, result);
+    }
+
+    [Fact]
+    public async Task GetActivitiesAsync_ClassOutsideSemester_ThrowsNotFoundWithoutActivityCall()
+    {
+        var activityCalls = 0;
+        var service = CreateService(
+            (_, _, _) => Task.FromResult<List<ClassInfo>?>(
+                [new ClassInfo { Id = 11 }]),
+            (_, _, _, _) =>
+            {
+                Interlocked.Increment(ref activityCalls);
+                return Task.FromResult(new List<Activity>());
+            });
+
+        await Assert.ThrowsAsync<KeyNotFoundException>(() =>
+            service.GetActivitiesAsync(
+                123,
+                10,
+                20,
+                "fake-session"));
+
+        Assert.Equal(0, activityCalls);
+    }
+
+    [Theory]
+    [InlineData("session")]
+    [InlineData("structural")]
+    [InlineData("transient")]
+    public async Task GetActivitiesAsync_ClassDiscoveryFailureIsPreserved(
+        string failureKind)
+    {
+        var activityCalls = 0;
+        var service = CreateService(
+            (_, _, _) => failureKind switch
+            {
+                "session" => throw new SessionExpiredException(),
+                "structural" => throw new StructuralParseException(
+                    "classes.class_cards",
+                    "Synthetic structural failure."),
+                _ => throw new TransientLeb2Exception(
+                    "Synthetic transient failure.")
+            },
+            (_, _, _, _) =>
+            {
+                Interlocked.Increment(ref activityCalls);
+                return Task.FromResult(new List<Activity>());
+            });
+
+        switch (failureKind)
+        {
+            case "session":
+                await Assert.ThrowsAsync<SessionExpiredException>(() =>
+                    service.GetActivitiesAsync(123, 10, 20, "fake-session"));
+                break;
+            case "structural":
+                await Assert.ThrowsAsync<StructuralParseException>(() =>
+                    service.GetActivitiesAsync(123, 10, 20, "fake-session"));
+                break;
+            default:
+                await Assert.ThrowsAsync<TransientLeb2Exception>(() =>
+                    service.GetActivitiesAsync(123, 10, 20, "fake-session"));
+                break;
+        }
+
+        Assert.Equal(0, activityCalls);
     }
 
     private static ActivityService CreateService(

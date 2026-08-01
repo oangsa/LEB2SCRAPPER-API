@@ -9,10 +9,12 @@ routes require the client-held LEB2 cookie on every request:
 Authorization: Bearer <session-cookie-value>
 ```
 
-The value after `Bearer` is opaque. It is not parsed or validated as a JWT. A custom
-ASP.NET Core authentication handler keeps it in a scoped request object, repositories
+The value after `Bearer` is opaque. It is not parsed or validated as a JWT. The custom
+ASP.NET Core authentication handler only checks that one credential was supplied; it
+does not cryptographically verify the session, issue access tokens, or prove that
+LEB2 will accept it. The handler keeps it in a scoped request object, repositories
 use it as the outbound LEB2 `Cookie` header, and the scoped value is cleared when the
-response completes.
+response completes. Actual session validity comes from LEB2 responses.
 
 For compatibility with clients of earlier releases, the same opaque value is also
 accepted directly in `Authorization` without the `Bearer` prefix. New clients should
@@ -47,7 +49,11 @@ or scraper failures.
 | `400` | `INVALID_REQUEST` | Request input failed validation. |
 | `401` | `AUTHENTICATION_REQUIRED` | Bearer header is absent or malformed. |
 | `401` | `SESSION_EXPIRED` | LEB2 rejected or redirected the supplied session. Discard the client-held cookie and reauthenticate. |
+| `404` | `RESOURCE_NOT_FOUND` | The requested resource or class/semester relationship was not found. |
+| `408` | `LEB2_UNAVAILABLE` | The request timed out. |
 | `429` | `CLIENT_THROTTLE_ACTIVE` | This client already has the maximum number of active and queued LEB2 operations. The response includes `Retry-After: 1`. |
+| `500` | `UNEXPECTED_ERROR` | An unexpected server error occurred. |
+| `502` | `LEB2_UNAVAILABLE` | LEB2 rejected or could not complete the upstream request. |
 | `502` | `SCRAPE_RESPONSE_CHANGED` | LEB2 responded, but its HTML or JSON shape no longer matches the scraper. |
 | `503` | `LEB2_UNAVAILABLE` | A transient LEB2 network, timeout, rate-limit, or server failure occurred. |
 | `503` | `REQUEST_BACKOFF_ACTIVE` | A recent failure has temporarily paused this endpoint. The response includes `Retry-After`. |
@@ -92,9 +98,11 @@ returns a flat activity list ordered by class ID while preserving LEB2's order w
 each class. An empty list is returned when the semester contains no published
 classes.
 
-`GET /Activity/{semesterId}/{classId}` returns the flat activity list for one class.
-The semester ID is validated as route context; this route does not scrape the
-semester or verify class membership.
+`GET /Activity/{semesterId}/{classId}` first discovers classes for the supplied
+semester through the existing structural scrape cache, then verifies that the class
+ID belongs to that semester before retrieving activities. A missing relationship
+returns `404 RESOURCE_NOT_FOUND`; class discovery failures use the existing error
+contract. The activity repository is not called when membership validation fails.
 
 `GET /Activity/{semesterId}/snapshot` uses the same class discovery and activity
 retrieval path as the flat semester route. It returns the semester ID and an
@@ -150,8 +158,14 @@ scale-from-zero or Selenium-miss latency is included in the warm target.
 
 `GET /health/leb2` is unauthenticated and always returns HTTP `200` with
 `Cache-Control: no-store`. It reports every fixed LEB2 dependency endpoint as
-`available` or `unavailable`, plus its active retry time and retry delay. The overall
-status is `degraded` when any endpoint has active backoff and `healthy` otherwise.
+`available` or `unavailable`, plus its active retry time and retry delay. The response
+includes `source: "local-observed-state"`. The overall status is `degraded` when any
+endpoint has active backoff observed by this process and `healthy` when no endpoint
+has active local backoff.
+
+This endpoint does not contact LEB2. It is an application-local observation of
+request-gate state, not a live reachability probe and not proof that LEB2 is currently
+reachable.
 
 The response deliberately excludes client fingerprints, credentials, failure
 shapes, alert counts, URLs, and SMTP state.
@@ -159,9 +173,17 @@ shapes, alert counts, URLs, and SMTP state.
 ## Process model
 
 The structural cache, activity cache, fingerprints, throttling, backoff, alert
-correlation, and health state are process-local. This release is intended for a
-single application process. Horizontal scaling requires coordinated distributed
-replacements or an explicit decision to accept per-instance behavior.
+correlation, and health state are process-local. Production Cloud Run deployment
+intentionally uses at most one active application instance, with Cloud Run HTTP
+request concurrency set to two. The outbound gate remains process-local: its global
+limit of four is application-wide only because production currently has one active
+instance. Cloud Run request concurrency and outbound LEB2 concurrency are separate
+limits.
+
+The application has no persistent user or session database. Horizontal scaling
+requires distributed replacements for throttling, backoff, and caches, plus
+distributed incident correlation and, if health is aggregated, distributed health
+state. Otherwise each instance would have independent local state.
 
 ## Email alert configuration
 

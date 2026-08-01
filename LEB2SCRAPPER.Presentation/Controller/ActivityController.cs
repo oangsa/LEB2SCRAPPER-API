@@ -31,6 +31,7 @@ public class ActivityController : ControllerBase
     [ProducesResponseType(typeof(List<Activity>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ValidationErrorResponse), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(typeof(ErrorResponse), StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ErrorResponse), StatusCodes.Status404NotFound)]
     [ProducesResponseType(typeof(ErrorResponse), StatusCodes.Status429TooManyRequests)]
     [ProducesResponseType(typeof(ErrorResponse), StatusCodes.Status500InternalServerError)]
     [ProducesResponseType(typeof(ErrorResponse), StatusCodes.Status502BadGateway)]
@@ -50,6 +51,7 @@ public class ActivityController : ControllerBase
     {
         var activities = await _service.ActivityService.GetActivitiesAsync(
             userId,
+            semesterId,
             classId,
             _sessionCredential.Value!,
             cancellationToken);

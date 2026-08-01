@@ -63,7 +63,7 @@ jobs:
             --memory=1Gi
             --concurrency=2
             --min-instances=0
-            --max-instances=3
+            --max-instances=1
             --service-account=${{ vars.GCP_RUNTIME_SERVICE_ACCOUNT }}
 
       - name: Add deployment URL to summary

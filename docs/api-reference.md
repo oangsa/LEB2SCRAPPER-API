@@ -17,6 +17,10 @@ Cloud Run:
 https://<cloud-run-service-url>
 ```
 
+Production Cloud Run deployment runs at most one active application instance.
+Caches, throttling, backoff, incident correlation, and health state are process-local;
+horizontal scaling requires distributed coordination.
+
 All request and response bodies use JSON unless stated otherwise.
 
 ## Endpoint summary
@@ -40,22 +44,16 @@ Protected endpoints require the complete client-held LEB2 session cookie:
 Authorization: Bearer <leb2-session-cookie>
 ```
 
-The value is an opaque LEB2 cookie, not a JWT. Legacy clients may send the cookie
-directly without the `Bearer` prefix, but new clients should use the Bearer form.
+The value is an opaque LEB2 cookie, not a JWT. The application authentication handler
+only checks that a credential was supplied; it does not issue or locally verify an
+access token. Actual session validity comes from LEB2 responses. Legacy clients may
+send the cookie directly without the `Bearer` prefix, but new clients should use the
+Bearer form.
 
 Every activity endpoint also requires:
 
 ```http
 X-LEB2-USER-ID: <positive-integer-user-id>
-```
-
-If Cloud Run IAM authentication is enabled, use
-`X-Serverless-Authorization` for the Google identity token so that
-`Authorization` remains available for the LEB2 session:
-
-```http
-X-Serverless-Authorization: Bearer <google-id-token>
-Authorization: Bearer <leb2-session-cookie>
 ```
 
 ## Shared request model
@@ -152,14 +150,14 @@ Possible error codes:
 | `400` | `INVALID_REQUEST` | An argument or operation was invalid. |
 | `401` | `AUTHENTICATION_REQUIRED` | A required LEB2 session header was absent or empty. |
 | `401` | `SESSION_EXPIRED` | LEB2 rejected or redirected the supplied session. |
-| `404` | `RESOURCE_NOT_FOUND` | The requested user or resource was not found. |
+| `404` | `RESOURCE_NOT_FOUND` | The requested user, resource, or class/semester relationship was not found. |
 | `408` | `LEB2_UNAVAILABLE` | The request timed out. |
 | `429` | `CLIENT_THROTTLE_ACTIVE` | The client has too many active or queued LEB2 requests. |
+| `500` | `UNEXPECTED_ERROR` | An unexpected server error occurred. |
 | `502` | `LEB2_UNAVAILABLE` | LEB2 rejected or could not complete the request. |
 | `502` | `SCRAPE_RESPONSE_CHANGED` | LEB2 returned an unexpected HTML or JSON structure. |
 | `503` | `LEB2_UNAVAILABLE` | A transient LEB2 network, rate-limit, or server failure occurred. |
 | `503` | `REQUEST_BACKOFF_ACTIVE` | This LEB2 operation is temporarily paused after a recent failure. |
-| `500` | `UNEXPECTED_ERROR` | An unexpected server error occurred. |
 
 Responses with `CLIENT_THROTTLE_ACTIVE` or `REQUEST_BACKOFF_ACTIVE` include a
 `Retry-After` response header. Authentication failures include
@@ -442,8 +440,10 @@ If no activities are found, the response is:
 []
 ```
 
-The current implementation validates `semesterId` as route context but does not
-scrape the semester or verify that `classId` belongs to it.
+The implementation discovers classes for `semesterId` through the existing
+60-second structural cache and verifies that `classId` belongs to that semester
+before retrieving activities. If the relationship is missing, the response is
+`404 RESOURCE_NOT_FOUND` and the activity lookup is not performed.
 
 Relevant error responses:
 
@@ -451,6 +451,7 @@ Relevant error responses:
   `X-LEB2-USER-ID` is missing, non-integer, or less than one.
 - `401 AUTHENTICATION_REQUIRED` when the session header is absent or empty.
 - `401 SESSION_EXPIRED` when LEB2 rejects the session.
+- `404 RESOURCE_NOT_FOUND` when the class does not belong to the supplied semester.
 - `429 CLIENT_THROTTLE_ACTIVE` when this client has too many queued requests.
 - `502 LEB2_UNAVAILABLE` or `502 SCRAPE_RESPONSE_CHANGED` for upstream failures.
 - `503 LEB2_UNAVAILABLE` or `503 REQUEST_BACKOFF_ACTIVE` for transient failures.
@@ -636,7 +637,8 @@ Relevant error responses are the same as
 
 ### GET `/health/leb2`
 
-Returns the process-local backoff status for each fixed LEB2 dependency.
+Returns locally observed request-gate/backoff state for each fixed LEB2 dependency.
+It does not contact LEB2 and is not a live upstream reachability probe.
 
 Authentication: none.
 
@@ -647,6 +649,7 @@ Successful response — `200 OK`:
 ```json
 {
   "observedAt": "2026-07-24T12:00:00Z",
+  "source": "local-observed-state",
   "status": "healthy",
   "endpoints": [
     {
@@ -683,7 +686,8 @@ Successful response — `200 OK`:
 }
 ```
 
-`status` is `degraded` when any endpoint has active backoff. An unavailable endpoint
+`status` is `degraded` when any endpoint has active backoff observed by this process,
+and `healthy` when no endpoint has active local backoff. An unavailable endpoint
 looks like:
 
 ```json
@@ -702,7 +706,9 @@ This endpoint always returns `200 OK`, including when the reported status is
 Cache-Control: no-store
 ```
 
-The health state is local to one application process or Cloud Run instance.
+`source` is always `local-observed-state`. The health state is local to one
+application process or Cloud Run instance. The endpoint reports what this process
+has observed; it does not prove that LEB2 is currently reachable.
 
 ## Swagger
 
