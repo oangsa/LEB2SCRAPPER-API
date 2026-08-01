@@ -20,7 +20,7 @@ public class SensitiveDataRedactorTests
     [Fact]
     public void Redact_RemovesAccessKeyHeaderValue()
     {
-        const string accessKey = "9a7b979b-a361-4170-aee7-cba89445495b";
+        const string accessKey = "access-key-test-value";
         var message = $"Request access-key: {accessKey}";
 
         var redacted = SensitiveDataRedactor.Redact(message, accessKey);
