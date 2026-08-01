@@ -65,6 +65,7 @@ jobs:
             --min-instances=0
             --max-instances=1
             --service-account=${{ vars.GCP_RUNTIME_SERVICE_ACCOUNT }}
+            --update-secrets=ConnectionStrings__Supabase=leb2scrapper-api-supabase-connection:1
 
       - name: Add deployment URL to summary
         run: |

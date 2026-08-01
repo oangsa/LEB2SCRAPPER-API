@@ -1,4 +1,5 @@
 using System.ComponentModel.DataAnnotations;
+using LEB2SCRAPPER.Presentation.Filters;
 using LEB2SCRAPPER.Entity.Models.Activity;
 using LEB2SCRAPPER.Entity.Models.Response;
 using LEB2SCRAPPER.Infrastructure.Contracts.Authentication;
@@ -12,6 +13,7 @@ namespace LEB2SCRAPPER.Presentation.Controller;
 
 [Route("[controller]")]
 [ApiController]
+[AccessKeyAuthorize(AccessKeyRequirement.Activated)]
 public class ActivityController : ControllerBase
 {
     private const string UserIdHeaderName = "X-LEB2-USER-ID";
@@ -31,6 +33,7 @@ public class ActivityController : ControllerBase
     [ProducesResponseType(typeof(List<Activity>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ValidationErrorResponse), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(typeof(ErrorResponse), StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ErrorResponse), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(ErrorResponse), StatusCodes.Status404NotFound)]
     [ProducesResponseType(typeof(ErrorResponse), StatusCodes.Status429TooManyRequests)]
     [ProducesResponseType(typeof(ErrorResponse), StatusCodes.Status500InternalServerError)]
@@ -64,6 +67,7 @@ public class ActivityController : ControllerBase
     [ProducesResponseType(typeof(List<Activity>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ValidationErrorResponse), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(typeof(ErrorResponse), StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ErrorResponse), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(ErrorResponse), StatusCodes.Status429TooManyRequests)]
     [ProducesResponseType(typeof(ErrorResponse), StatusCodes.Status500InternalServerError)]
     [ProducesResponseType(typeof(ErrorResponse), StatusCodes.Status502BadGateway)]
@@ -92,6 +96,7 @@ public class ActivityController : ControllerBase
     [ProducesResponseType(typeof(SemesterSnapshotResponse), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ValidationErrorResponse), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(typeof(ErrorResponse), StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ErrorResponse), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(ErrorResponse), StatusCodes.Status429TooManyRequests)]
     [ProducesResponseType(typeof(ErrorResponse), StatusCodes.Status500InternalServerError)]
     [ProducesResponseType(typeof(ErrorResponse), StatusCodes.Status502BadGateway)]

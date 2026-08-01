@@ -1,7 +1,12 @@
 **Note**: This API is not officially affiliated with KMUTT or the LEB2 system. It is an independent tool created to help students monitor their academic activities more effectively.
 
 See [authentication and scrape resilience](docs/auth-and-resilience.md) for the
-per-request bearer contract, error codes, backoff behavior, and alert configuration.
+two-credential contract, Supabase-backed access-key enrollment, error codes,
+backoff behavior, and alert configuration.
+
+See [the API reference](docs/api-reference.md) for request examples. Every
+user-facing route requires the manually provisioned `access-key` header; data
+routes additionally require the opaque LEB2 session cookie in `Authorization`.
 
 See [Cloud Run continuous deployment](docs/cloud-run-continuous-deployment.md) for
 the GitHub Actions workflow and one-time Workload Identity Federation setup.

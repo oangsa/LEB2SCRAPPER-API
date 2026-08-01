@@ -16,4 +16,16 @@ public class SensitiveDataRedactorTests
         Assert.DoesNotContain("fake-value", redacted);
         Assert.Contains("[REDACTED]", redacted);
     }
+
+    [Fact]
+    public void Redact_RemovesAccessKeyHeaderValue()
+    {
+        const string accessKey = "9a7b979b-a361-4170-aee7-cba89445495b";
+        var message = $"Request access-key: {accessKey}";
+
+        var redacted = SensitiveDataRedactor.Redact(message, accessKey);
+
+        Assert.DoesNotContain(accessKey, redacted);
+        Assert.Contains("access-key: [REDACTED]", redacted);
+    }
 }

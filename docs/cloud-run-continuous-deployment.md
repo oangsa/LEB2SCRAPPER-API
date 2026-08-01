@@ -28,6 +28,7 @@ The workflow applies these settings on every deployment:
 | Minimum instances | `0` |
 | Maximum instances | `1` |
 | Runtime environment | `Production` |
+| Supabase connection | Secret Manager secret `leb2scrapper-api-supabase-connection`, version `1` |
 
 The conservative memory and concurrency values account for requests that launch
 headless Chromium. Cloud Run request concurrency is the number of simultaneous HTTP
@@ -47,10 +48,12 @@ than one active instance requires distributed replacements for throttling, backo
 and caches, plus distributed incident correlation and, if health is aggregated,
 distributed health state.
 
-The application has no persistent user or session database; clients retain their
-opaque LEB2 session credentials.
+Supabase stores the local users, keys, and user-key assignments. It does not store
+LEB2 credentials or session cookies; clients retain their opaque LEB2 session
+credentials.
 
-The runtime uses a dedicated service account with no project roles.
+The runtime uses a dedicated service account. It needs only Secret Manager access
+to read the Supabase connection string at instance startup.
 
 The workflow does not manage public access. A new service is private by default.
 After the first deployment, the project owner can make it public once, and later
@@ -71,6 +74,34 @@ Configure these variables under:
 
 These values identify cloud resources but are not credentials, so repository
 variables are appropriate.
+
+## Supabase database connection
+
+The application expects the PostgreSQL connection string in:
+
+```text
+ConnectionStrings__Supabase
+```
+
+Open the Supabase project dashboard's **Connect** or database connection panel and
+copy a PostgreSQL connection string. The required fields are host, port, database,
+username, password, and SSL mode. Use SSL, for example:
+
+```text
+Host=<supabase-host>;Port=5432;Database=postgres;Username=<supabase-user>;Password=<password>;SSL Mode=Require;Trust Server Certificate=true
+```
+
+For this long-lived Npgsql backend on Cloud Run, prefer Supabase's **Session Pooler**
+connection when the dashboard offers it. It normally uses an IPv4 pooler hostname
+and port `5432`, and supports persistent backend connections. Use the direct database
+host and port `5432` if the deployment has suitable IPv6 or the project's IPv4
+add-on. The **Transaction Pooler** normally uses port `6543` and is intended for
+short-lived/serverless transactions; it may require prepared statements to be
+disabled, so it is not the first choice here. Supabase's labels and hostnames can
+vary by project; use the values shown by the current dashboard. See the [Supabase
+Postgres connection guide](https://supabase.com/docs/guides/database/connecting-to-postgres).
+
+Do not put this string in GitHub variables, source, or workflow YAML.
 
 ## One-time Google Cloud setup
 
@@ -107,6 +138,7 @@ gcloud services enable \
   run.googleapis.com \
   cloudbuild.googleapis.com \
   artifactregistry.googleapis.com \
+  secretmanager.googleapis.com \
   iam.googleapis.com \
   iamcredentials.googleapis.com \
   sts.googleapis.com \
@@ -145,8 +177,35 @@ export LEB2_RUNTIME_SERVICE_ACCOUNT="leb2scrapper-api-runtime@${LEB2_GCP_PROJECT
 ```
 
 If either account already exists, skip its create command and keep the corresponding
-export. The runtime account intentionally receives no project role because this
-application does not call Google Cloud APIs.
+export. The runtime account does not need broad project roles, but it does need the
+Secret Manager accessor role shown below.
+
+Create the Secret Manager secret and add the connection string from a protected local
+file. The file must contain only the value for `ConnectionStrings:Supabase`; never
+commit it:
+
+```bash
+export LEB2_SUPABASE_SECRET_NAME="leb2scrapper-api-supabase-connection"
+
+gcloud secrets create "$LEB2_SUPABASE_SECRET_NAME" \
+  --replication-policy="automatic" \
+  --project="$LEB2_GCP_PROJECT_ID"
+
+gcloud secrets versions add "$LEB2_SUPABASE_SECRET_NAME" \
+  --data-file="/secure/path/supabase-connection-string.txt" \
+  --project="$LEB2_GCP_PROJECT_ID"
+
+gcloud secrets add-iam-policy-binding "$LEB2_SUPABASE_SECRET_NAME" \
+  --project="$LEB2_GCP_PROJECT_ID" \
+  --member="serviceAccount:${LEB2_RUNTIME_SERVICE_ACCOUNT}" \
+  --role="roles/secretmanager.secretAccessor"
+```
+
+The first version is pinned as `1` by the workflow. For rotation, add a new secret
+version and update the workflow's `--update-secrets` value to the new version before
+deploying. Cloud Run fetches environment-variable secrets before an instance starts;
+the runtime service account therefore needs the accessor role. See Google's
+[Cloud Run Secret Manager guide](https://docs.cloud.google.com/run/docs/configuring/services/secrets).
 
 Grant the deployer only the project roles required for a Cloud Run source deployment:
 
@@ -301,6 +360,7 @@ export LEB2_CLOUD_RUN_URL="$(
 curl "${LEB2_CLOUD_RUN_URL}/health/leb2"
 ```
 
-Making the service public exposes the unauthenticated `/User/login` and
-`/User/cookie` routes. Review application-level abuse controls before advertising
-the URL broadly.
+Making the service public exposes `/User/login` and `/User/cookie` to network
+traffic without Cloud Run IAM. They still require a valid application `access-key`
+(`/User/cookie` requires an activated one), but review application-level abuse
+controls before advertising the URL broadly.

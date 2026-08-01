@@ -6,4 +6,8 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\LEB2SCRAPPER.Entity\LEB2SCRAPPER.Entity.csproj" />
+  </ItemGroup>
+
 </Project>

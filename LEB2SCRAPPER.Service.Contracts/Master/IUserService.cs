@@ -7,6 +7,7 @@ public interface IUserService
 {
     Task<User?> GetUserByCredentialsAsync(
         Credentials credentials,
+        Guid accessKeyId,
         CancellationToken cancellationToken = default);
 
     Task<string?> GetCookieAsync(

@@ -1,9 +1,10 @@
-using System.Text.Json;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Http;
+using LEB2SCRAPPER.Presentation.Filters;
 using LEB2SCRAPPER.Service.Contracts.Core;
 using LEB2SCRAPPER.Entity.Models.Authentication;
 using LEB2SCRAPPER.Entity.Models.Response;
+using LEB2SCRAPPER.Infrastructure.Contracts.AccessKey;
 
 
 namespace LEB2SCRAPPER.Presentation.Controller
@@ -13,12 +14,24 @@ namespace LEB2SCRAPPER.Presentation.Controller
     public class UserController : ControllerBase
     {
         private readonly IServiceManager _service;
-        public UserController(IServiceManager service) => _service = service;
+        private readonly AccessKeyRequestContext _accessKeyContext;
+
+        public UserController(
+            IServiceManager service,
+            AccessKeyRequestContext accessKeyContext)
+        {
+            _service = service;
+            _accessKeyContext = accessKeyContext;
+        }
 
         [HttpPost("login")]
+        [AccessKeyAuthorize(AccessKeyRequirement.Provisioned)]
         [ProducesResponseType(StatusCodes.Status200OK)]
         [ProducesResponseType(typeof(ValidationErrorResponse), StatusCodes.Status400BadRequest)]
+        [ProducesResponseType(typeof(ErrorResponse), StatusCodes.Status401Unauthorized)]
+        [ProducesResponseType(typeof(ErrorResponse), StatusCodes.Status403Forbidden)]
         [ProducesResponseType(typeof(ErrorResponse), StatusCodes.Status404NotFound)]
+        [ProducesResponseType(typeof(ErrorResponse), StatusCodes.Status503ServiceUnavailable)]
         [ProducesResponseType(StatusCodes.Status500InternalServerError)]
         public async Task<IActionResult> Login(
             [FromBody] Credentials credentials,
@@ -26,6 +39,7 @@ namespace LEB2SCRAPPER.Presentation.Controller
         {
             var user = await _service.UserService.GetUserByCredentialsAsync(
                 credentials,
+                _accessKeyContext.Current!.KeyId,
                 cancellationToken);
 
             if (user == null)
@@ -50,8 +64,11 @@ namespace LEB2SCRAPPER.Presentation.Controller
         }
 
         [HttpPost("cookie")]
+        [AccessKeyAuthorize(AccessKeyRequirement.Activated)]
         [ProducesResponseType(StatusCodes.Status200OK)]
         [ProducesResponseType(typeof(ValidationErrorResponse), StatusCodes.Status400BadRequest)]
+        [ProducesResponseType(typeof(ErrorResponse), StatusCodes.Status401Unauthorized)]
+        [ProducesResponseType(typeof(ErrorResponse), StatusCodes.Status403Forbidden)]
         [ProducesResponseType(typeof(ErrorResponse), StatusCodes.Status404NotFound)]
         [ProducesResponseType(typeof(ErrorResponse), StatusCodes.Status502BadGateway)]
         [ProducesResponseType(typeof(ErrorResponse), StatusCodes.Status503ServiceUnavailable)]

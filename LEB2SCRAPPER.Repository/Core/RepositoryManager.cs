@@ -12,13 +12,15 @@ namespace LEB2SCRAPPER.Repository.Core
         private readonly Lazy<IScrapingRepository> _scrapingRepository;
         private readonly Lazy<IActivityRepository> _activityRepository;
         private readonly Lazy<IUserRepository> _userRepository;
+        private readonly Lazy<IAccessKeyRepository> _accessKeyRepository;
 
         public RepositoryManager(
             IHttpService httpService,
             IOutboundRequestGate outboundRequestGate,
             IClientFingerprintProvider clientFingerprintProvider,
             IStructuralScrapeCache structuralScrapeCache,
-            IActivityResultCache activityResultCache)
+            IActivityResultCache activityResultCache,
+            IAccessKeyRepository accessKeyRepository)
         {
             _scrapingRepository = new Lazy<IScrapingRepository>(
                 () => new ScrapingRepository(
@@ -34,11 +36,14 @@ namespace LEB2SCRAPPER.Repository.Core
                 () => new UserRepository(
                     httpService,
                     clientFingerprintProvider));
+            _accessKeyRepository = new Lazy<IAccessKeyRepository>(
+                () => accessKeyRepository);
         }
 
         public IScrapingRepository ScrapingRepository => _scrapingRepository.Value;
         public IActivityRepository ActivityRepository => _activityRepository.Value;
         public IUserRepository UserRepository => _userRepository.Value;
+        public IAccessKeyRepository AccessKeyRepository => _accessKeyRepository.Value;
 
     }
 }

@@ -3,6 +3,7 @@ using LEB2SCRAPPER.Contracts.Repository;
 using LEB2SCRAPPER.Contracts.Repository.Core;
 using LEB2SCRAPPER.Entity.Exceptions.Leb2Integration;
 using LEB2SCRAPPER.Entity.Models.Activity;
+using LEB2SCRAPPER.Entity.Models.AccessKey;
 using LEB2SCRAPPER.Entity.Models.Authentication;
 using LEB2SCRAPPER.Entity.Models.Class;
 using LEB2SCRAPPER.Entity.Models.Users;
@@ -483,6 +484,9 @@ public class ActivityServiceTests
 
         public IUserRepository UserRepository { get; } =
             new UnsupportedUserRepository();
+
+        public IAccessKeyRepository AccessKeyRepository { get; } =
+            new UnsupportedAccessKeyRepository();
     }
 
     private sealed class StubScrapingRepository : IScrapingRepository
@@ -560,6 +564,25 @@ public class ActivityServiceTests
     {
         public Task<User?> GetUserByCredentialsAsync(
             Credentials credentials,
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
+    }
+
+    private sealed class UnsupportedAccessKeyRepository : IAccessKeyRepository
+    {
+        public Task<AccessKeyState?> GetAccessKeyStateAsync(
+            Guid keyId,
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
+
+        public Task UpsertUserAndClaimKeyAsync(
+            Guid keyId,
+            string studentId,
+            string name,
             CancellationToken cancellationToken = default)
         {
             throw new NotSupportedException();

@@ -8,6 +8,7 @@ public static partial class SensitiveDataRedactor
     {
         var redacted = AuthorizationHeaderRegex().Replace(value, "$1[REDACTED]");
         redacted = CookieHeaderRegex().Replace(redacted, "$1[REDACTED]");
+        redacted = AccessKeyHeaderRegex().Replace(redacted, "$1[REDACTED]");
 
         foreach (var secret in secrets)
         {
@@ -25,4 +26,7 @@ public static partial class SensitiveDataRedactor
 
     [GeneratedRegex(@"(?i)(Cookie\s*[:=]\s*)[^\r\n]+")]
     private static partial Regex CookieHeaderRegex();
+
+    [GeneratedRegex(@"(?i)(access-key\s*[:=]\s*)[^\r\n,]+")]
+    private static partial Regex AccessKeyHeaderRegex();
 }
