@@ -4,6 +4,8 @@ public sealed class Leb2HealthResponse
 {
     public DateTime ObservedAt { get; set; }
 
+    public string Source { get; set; } = string.Empty;
+
     public string Status { get; set; } = string.Empty;
 
     public List<Leb2EndpointHealthResponse> Endpoints { get; set; } = new();

@@ -25,10 +25,33 @@ public class ActivityService : IActivityService
 
     public async Task<List<Activity>?> GetActivitiesAsync(
         int userId,
+        int semesterId,
         int classId,
         string token,
         CancellationToken cancellationToken = default)
     {
+        ValidateSemesterRequest(userId, semesterId, token);
+
+        if (classId <= 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(classId),
+                "Class ID must be greater than zero.");
+        }
+
+        var discoveredClasses = await _repositoryManager.ScrapingRepository
+            .GetClassesBySemesterIdAsync(
+                semesterId,
+                token,
+                cancellationToken);
+
+        if (discoveredClasses is null
+            || !discoveredClasses.Any(classInfo => classInfo.Id == classId))
+        {
+            throw new KeyNotFoundException(
+                $"Class {classId} is not a member of semester {semesterId}.");
+        }
+
         var activities = await _repositoryManager.ActivityRepository.GetActivitiesAsync(
             userId,
             classId,

@@ -40,6 +40,7 @@ public class HealthController : ControllerBase
         return Ok(new Leb2HealthResponse
         {
             ObservedAt = snapshot.ObservedAt.UtcDateTime,
+            Source = "local-observed-state",
             Status = endpoints.Any(endpoint => endpoint.Status == "unavailable")
                 ? "degraded"
                 : "healthy",

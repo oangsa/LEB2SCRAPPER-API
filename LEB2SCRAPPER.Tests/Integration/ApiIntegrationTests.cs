@@ -28,9 +28,10 @@ public class ApiIntegrationTests
     {
         var activityService = new FakeActivityService
         {
-            GetByClassHandler = (userId, classId, token, _) =>
+            GetByClassHandler = (userId, semesterId, classId, token, _) =>
             {
                 Assert.Equal(123, userId);
+                Assert.Equal(10, semesterId);
                 Assert.Equal(20, classId);
                 Assert.Equal("fake-session", token);
 
@@ -49,6 +50,40 @@ public class ApiIntegrationTests
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Equal([1, 2], activities!.Select(activity => activity.Id));
+    }
+
+    [Theory]
+    [InlineData("not-found", HttpStatusCode.NotFound, ApiErrorCodes.ResourceNotFound)]
+    [InlineData("session", HttpStatusCode.Unauthorized, ApiErrorCodes.SessionExpired)]
+    [InlineData("structural", HttpStatusCode.BadGateway, ApiErrorCodes.ScrapeResponseChanged)]
+    [InlineData("transient", HttpStatusCode.ServiceUnavailable, ApiErrorCodes.Leb2Unavailable)]
+    public async Task ClassActivityRoute_MembershipFailuresUseMiddlewareContract(
+        string failureKind,
+        HttpStatusCode expectedStatus,
+        string expectedCode)
+    {
+        var activityService = new FakeActivityService
+        {
+            GetByClassHandler = (_, _, _, _, _) => failureKind switch
+            {
+                "not-found" => throw new KeyNotFoundException(
+                    "The requested class is not in the semester."),
+                "session" => throw new SessionExpiredException(),
+                "structural" => throw new StructuralParseException(
+                    "classes.class_cards",
+                    "Synthetic structural failure."),
+                _ => throw new TransientLeb2Exception(
+                    "Synthetic transient failure.")
+            }
+        };
+        using var factory = CreateFactory(activityService);
+        using var client = CreateAuthenticatedClient(factory);
+
+        var response = await client.GetAsync("/Activity/10/20");
+        var error = await response.Content.ReadFromJsonAsync<ErrorResponse>();
+
+        Assert.Equal(expectedStatus, response.StatusCode);
+        Assert.Equal(expectedCode, error?.ResponseCode);
     }
 
     [Fact]
@@ -286,12 +321,49 @@ public class ApiIntegrationTests
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Equal("no-store", response.Headers.CacheControl?.ToString());
         Assert.Equal("degraded", health?.Status);
+        Assert.Equal("local-observed-state", health?.Source);
         Assert.Equal(Leb2OutboundEndpoints.All, health?.Endpoints.Select(e => e.Name));
         var activities = Assert.Single(
             health!.Endpoints,
             endpoint => endpoint.Name == Leb2OutboundEndpoints.Activities);
         Assert.Equal("unavailable", activities.Status);
         Assert.Equal(30, activities.RetryAfterSeconds);
+    }
+
+    [Fact]
+    public async Task HealthEndpoint_IsHealthyWhenNoEndpointHasActiveBackoff()
+    {
+        var observedAt = new DateTimeOffset(
+            2026,
+            7,
+            24,
+            0,
+            0,
+            0,
+            TimeSpan.Zero);
+        var snapshot = new OutboundRequestStatusSnapshot(
+            observedAt,
+            Leb2OutboundEndpoints.All
+                .Select(endpoint => new OutboundEndpointStatus(endpoint, null, 0))
+                .ToList());
+        using var factory = CreateFactory(
+            new FakeActivityService(),
+            new StaticStatusReader(snapshot));
+        using var client = factory.CreateClient();
+
+        var response = await client.GetAsync("/health/leb2");
+        var health = await response.Content.ReadFromJsonAsync<Leb2HealthResponse>();
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("no-store", response.Headers.CacheControl?.ToString());
+        Assert.Equal("healthy", health?.Status);
+        Assert.Equal("local-observed-state", health?.Source);
+        Assert.All(health!.Endpoints, endpoint =>
+        {
+            Assert.Equal("available", endpoint.Status);
+            Assert.Null(endpoint.RetryAt);
+            Assert.Equal(0, endpoint.RetryAfterSeconds);
+        });
     }
 
     [Fact]
@@ -308,6 +380,13 @@ public class ApiIntegrationTests
         var snapshotPath = paths.GetProperty("/Activity/{semesterId}/snapshot");
 
         AssertActivityOperation(classPath.GetProperty("get"));
+        Assert.Contains(
+            "404",
+            classPath
+                .GetProperty("get")
+                .GetProperty("responses")
+                .EnumerateObject()
+                .Select(property => property.Name));
         AssertActivityOperation(semesterPath.GetProperty("get"));
         AssertActivityOperation(snapshotPath.GetProperty("get"));
         Assert.False(classPath.TryGetProperty("post", out _));
@@ -435,10 +514,11 @@ public class ApiIntegrationTests
         public Func<
             int,
             int,
+            int,
             string,
             CancellationToken,
             Task<List<Activity>?>> GetByClassHandler { get; set; } =
-                (_, _, _, _) => Task.FromResult<List<Activity>?>([]);
+                (_, _, _, _, _) => Task.FromResult<List<Activity>?>([]);
 
         public Func<
             int,
@@ -462,11 +542,17 @@ public class ApiIntegrationTests
 
         public Task<List<Activity>?> GetActivitiesAsync(
             int userId,
+            int semesterId,
             int classId,
             string token,
             CancellationToken cancellationToken = default)
         {
-            return GetByClassHandler(userId, classId, token, cancellationToken);
+            return GetByClassHandler(
+                userId,
+                semesterId,
+                classId,
+                token,
+                cancellationToken);
         }
 
         public Task<List<Activity>> GetActivitiesBySemesterAsync(

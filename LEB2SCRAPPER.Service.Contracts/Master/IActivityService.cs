@@ -7,6 +7,7 @@ public interface IActivityService
 {
     Task<List<Activity>?> GetActivitiesAsync(
         int userId,
+        int semesterId,
         int classId,
         string token,
         CancellationToken cancellationToken = default);

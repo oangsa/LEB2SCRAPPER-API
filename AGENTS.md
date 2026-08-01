@@ -38,6 +38,15 @@ The local launch profiles use:
 
 The Docker image listens on port `8080` and runs in the Production environment by default. Swagger is therefore disabled in the default container configuration.
 
+Production Cloud Run deployment intentionally allows at most one active application
+instance with HTTP request concurrency `2`. Structural and activity caches, client
+fingerprints, outbound throttling, backoff, incident correlation, and health state
+are process-local. The outbound gate's `MaxConcurrentRequests = 4` is therefore an
+application-wide production limit only while this single-instance deployment model
+remains in place. Horizontal scaling requires distributed replacements for
+throttling, backoff, caches, incident correlation, and optionally health
+aggregation. The application has no persistent user or session database.
+
 ---
 
 ## 2. Project Structure
@@ -186,7 +195,7 @@ Contains:
 
 - `Master/ActivityRepository.cs`
 - `Master/ScrapingRepository.cs`
-- `Master/UserReposiroty.cs`
+- `Master/UserRepository.cs`
 - `Core/RepositoryManager.cs`
 
 `RepositoryManager` lazily creates repository implementations.
@@ -198,7 +207,8 @@ What it should NOT do:
 - Contain controller-specific validation.
 - Bypass existing transport helpers without a concrete need.
 
-Note: `UserReposiroty.cs` is an existing filename typo; the class is correctly named `UserRepository`. Do not copy the typo into new types or filenames.
+`UserRepository.cs` is the canonical filename for `UserRepository`. Do not copy the
+historical `UserReposiroty.cs` typo into new types or filenames.
 
 ### Infrastructure Layers
 
@@ -292,12 +302,18 @@ The default container runs as Production, so its Swagger UI is not enabled unles
   - `id` is the semester ID.
 - `GET /Activity/{semesterId}/{classId}`
   - Returns activities for one class.
+  - Verifies that `classId` belongs to `semesterId`; otherwise returns the normal
+    `404 RESOURCE_NOT_FOUND` contract.
   - Requires a positive user ID in the `X-LEB2-USER-ID` header.
   - Requires the LEB2 session value as a bearer credential in the `Authorization` header.
 - `GET /Activity/{semesterId}`
   - Returns activities for every class in one semester.
   - Requires a positive user ID in the `X-LEB2-USER-ID` header.
   - Requires the LEB2 session value as a bearer credential in the `Authorization` header.
+- `GET /health/leb2`
+  - Returns `200 OK` with `Cache-Control: no-store`.
+  - Reports process-local observed request-gate/backoff state; it does not contact
+    LEB2 or prove current upstream reachability.
 
 The current `Authorization` header is passed through as an LEB2 session/cookie value. It is not a JWT authentication implementation and should not be documented or treated as one.
 

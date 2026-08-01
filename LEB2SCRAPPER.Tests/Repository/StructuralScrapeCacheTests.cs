@@ -88,6 +88,27 @@ public class StructuralScrapeCacheTests
     }
 
     [Fact]
+    public async Task ClassMembershipLookup_ReusesSameClientAndSemesterEntry()
+    {
+        using var cache = CreateCache(new ManualTimeProvider());
+        var calls = 0;
+
+        Task<List<ClassInfo>?> Factory(CancellationToken _)
+        {
+            Interlocked.Increment(ref calls);
+            return Task.FromResult<List<ClassInfo>?>(
+                [new ClassInfo { Id = 10 }]);
+        }
+
+        var first = await cache.GetClassesAsync("client", 10, Factory);
+        var second = await cache.GetClassesAsync("client", 10, Factory);
+
+        Assert.Equal(1, calls);
+        Assert.Equal([10], first!.Select(classInfo => classInfo.Id));
+        Assert.Equal([10], second!.Select(classInfo => classInfo.Id));
+    }
+
+    [Fact]
     public async Task ExceptionsNullsAndCancellation_AreNotCached()
     {
         using var cache = CreateCache(new ManualTimeProvider());

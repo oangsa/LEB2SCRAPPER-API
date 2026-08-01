@@ -26,12 +26,31 @@ The workflow applies these settings on every deployment:
 | Maximum concurrency per instance | `2` |
 | Request timeout | `300 seconds` |
 | Minimum instances | `0` |
-| Maximum instances | `3` |
+| Maximum instances | `1` |
 | Runtime environment | `Production` |
 
 The conservative memory and concurrency values account for requests that launch
-headless Chromium. The runtime uses a dedicated service account with no project
-roles.
+headless Chromium. Cloud Run request concurrency is the number of simultaneous HTTP
+requests accepted by one instance; it is separate from the process-local
+`OutboundRequestGate`, which allows at most four outbound LEB2 operations globally,
+two per client, and two activity operations in aggregate. The workflow keeps both
+limits unchanged.
+
+This release intentionally runs at most one active Cloud Run instance because the
+structural scrape cache, activity cache, client fingerprints, outbound throttling,
+backoff, structural-failure correlation, and health state are process-local. The
+instance limit makes those mechanisms one application-wide coordination state while
+the service is running. State is still lost on restart or scale-to-zero.
+
+Horizontal scaling is not supported by this coordination model. Supporting more
+than one active instance requires distributed replacements for throttling, backoff,
+and caches, plus distributed incident correlation and, if health is aggregated,
+distributed health state.
+
+The application has no persistent user or session database; clients retain their
+opaque LEB2 session credentials.
+
+The runtime uses a dedicated service account with no project roles.
 
 The workflow does not manage public access. A new service is private by default.
 After the first deployment, the project owner can make it public once, and later
