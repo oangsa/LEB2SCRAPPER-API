@@ -114,42 +114,90 @@ key-management endpoint.
 
 ### Supabase schema prerequisite
 
-The application does not run migrations. Before merging or deploying this version,
-manually apply and verify this exact SQL:
+The application does not run migrations. Apply this manual migration to the supplied
+current production schema before enabling device enforcement:
 
 ```sql
-ALTER TABLE users
-ADD COLUMN leb2_user_id INTEGER;
+BEGIN;
 
-CREATE UNIQUE INDEX uq_users_leb2_user_id
-ON users (leb2_user_id)
+-- Preserve permanent user records, but make key-owned assignments disappear
+-- automatically when an operator revokes a key.
+
+ALTER TABLE public.user_keys
+DROP CONSTRAINT fk_user_keys_key;
+
+ALTER TABLE public.user_keys
+ADD CONSTRAINT fk_user_keys_key
+FOREIGN KEY (key_id)
+REFERENCES public.keys(id)
+ON DELETE CASCADE;
+
+
+ALTER TABLE public.key_device_bindings
+DROP CONSTRAINT fk_key_device_bindings_key;
+
+ALTER TABLE public.key_device_bindings
+ADD CONSTRAINT fk_key_device_bindings_key
+FOREIGN KEY (key_id)
+REFERENCES public.keys(id)
+ON DELETE CASCADE;
+
+
+-- Device binding invariant:
+-- one access key may have at most one active device.
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_key_device_bindings_active_key
+ON public.key_device_bindings (key_id)
+WHERE unbound_at IS NULL;
+
+
+-- Useful lookup for logout/binding checks.
+
+CREATE INDEX IF NOT EXISTS ix_key_device_bindings_key_device_hash
+ON public.key_device_bindings (key_id, device_id_hash);
+
+
+-- Existing access-key identity invariant.
+-- Keep/create this if production does not already have it.
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_users_leb2_user_id
+ON public.users (leb2_user_id)
 WHERE leb2_user_id IS NOT NULL;
 
-CREATE TABLE key_device_bindings (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    key_id UUID NOT NULL REFERENCES keys(id),
-    device_id_hash VARCHAR NOT NULL,
-    device_name VARCHAR,
-    platform VARCHAR,
-    os_version VARCHAR,
-    app_version VARCHAR,
-    bound_at TIMESTAMP WITHOUT TIME ZONE NOT NULL,
-    unbound_at TIMESTAMP WITHOUT TIME ZONE,
-    unbound_reason VARCHAR,
-    created_by VARCHAR NOT NULL,
-    updated_by VARCHAR NOT NULL,
-    created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
 
-CREATE UNIQUE INDEX uq_key_device_bindings_active_key
-ON key_device_bindings (key_id)
-WHERE unbound_at IS NULL;
+-- Normalize the existing user_keys(key_id) unique constraint name without
+-- creating a redundant second unique constraint.
+
+DO $$
+DECLARE
+    existing_constraint text;
+BEGIN
+    SELECT c.conname
+    INTO existing_constraint
+    FROM pg_constraint c
+    WHERE c.conrelid = 'public.user_keys'::regclass
+      AND c.contype = 'u'
+      AND pg_get_constraintdef(c.oid) = 'UNIQUE (key_id)'
+    LIMIT 1;
+
+    IF existing_constraint IS NULL THEN
+        ALTER TABLE public.user_keys
+        ADD CONSTRAINT uq_user_keys_key UNIQUE (key_id);
+    ELSIF existing_constraint <> 'uq_user_keys_key' THEN
+        EXECUTE format(
+            'ALTER TABLE public.user_keys RENAME CONSTRAINT %I TO uq_user_keys_key',
+            existing_constraint
+        );
+    END IF;
+END
+$$;
+
+COMMIT;
 ```
 
-Apply the device-binding statements once in the existing Supabase database. The
-application does not run migrations or create these tables automatically. To reset a
-device without changing account ownership, an operator can run:
+The migration intentionally does not add `ON DELETE CASCADE` from `users` to
+`user_keys`. To reset a device without changing account ownership, an operator can
+run:
 
 ```sql
 UPDATE key_device_bindings
@@ -165,6 +213,46 @@ In production, `user_keys` ownership uniqueness is enforced by constraint
 `uq_user_keys_key`. Apply and verify the schema first, then merge; the main deployment
 deploys Cloud Run. This prerequisite adds no HTTP/API behavior, and the constraint name
 is not exposed to API clients.
+
+After the migration, revoke a key with one statement. PostgreSQL removes its
+`user_keys` assignment and all `key_device_bindings` history while preserving the
+`users` row:
+
+```sql
+DELETE FROM public.keys
+WHERE id = '<key-id>';
+```
+
+Verify the production objects before enabling enforcement:
+
+```sql
+SELECT
+    conname,
+    pg_get_constraintdef(oid)
+FROM pg_constraint
+WHERE conrelid IN (
+    'public.user_keys'::regclass,
+    'public.key_device_bindings'::regclass
+)
+ORDER BY conrelid::regclass::text, conname;
+```
+
+```sql
+SELECT
+    indexname,
+    indexdef
+FROM pg_indexes
+WHERE schemaname = 'public'
+  AND tablename IN (
+      'users',
+      'user_keys',
+      'key_device_bindings'
+  )
+ORDER BY tablename, indexname;
+```
+
+The result must include `uq_user_keys_key`, `uq_users_leb2_user_id`,
+`uq_key_device_bindings_active_key`, and both key foreign keys with `ON DELETE CASCADE`.
 
 Example manual provisioning with a fake UUID:
 
@@ -195,9 +283,9 @@ activity requests fail closed until that happens.
 | Provisioned, unassigned | Allowed | Rejected with `ACCESS_KEY_NOT_ACTIVATED` |
 | Assigned in `user_keys` | Allowed, idempotent for the owner | Allowed when `leb2_user_id` is initialized |
 
-To revoke access, remove the key's device-binding history first when the production
-foreign key is not configured with `ON DELETE CASCADE`, then delete the `keys` row.
-To make a key claimable again without revoking the key, delete its `user_keys` row.
+To revoke access, delete the `keys` row; the production foreign keys cascade its
+assignment and device-binding history. To make a key claimable again without
+revoking the key, delete its `user_keys` row.
 Neither operation is exposed as an API route.
 
 ## Shared request model
@@ -236,8 +324,11 @@ X-Device-ID: <stable-app-device-id>
 X-Device-Name: <display-name>
 X-Device-Platform: android
 X-Device-OS-Version: <os-version>
-X-Device-App-Version: <app-version>
 ```
+
+`X-Client-Version` is the authoritative frontend application version. When device
+binding is persisted, it also populates the binding's `app_version`; clients do not
+send a second app-version header.
 
 With `DeviceBinding:EnforcementEnabled=true`, `X-Device-ID` is required and must
 match the one active binding for the key. First successful login binds the account
@@ -256,8 +347,9 @@ X-Client-Version: 0.5.2
 
 `ClientCompatibility:EnforcementEnabled=true` rejects a semantically older supported
 v1 client with `426 CLIENT_UPDATE_REQUIRED`. A newer version than
-`LatestClientVersion` is not rejected merely for being newer. Missing or malformed
-client versions receive `400`; `/api/v1/meta` and `/api/v1/health/leb2` remain
+`LatestClientVersion` is not rejected merely for being newer. Missing or blank client
+versions receive `400 CLIENT_VERSION_REQUIRED`; multiple or malformed values receive
+`400 CLIENT_VERSION_INVALID`. `/api/v1/meta` and `/api/v1/health/leb2` remain
 anonymous and exempt so clients can bootstrap and monitor during rollout.
 
 The `426` body uses the normal error model:
@@ -280,7 +372,7 @@ The route/header contract is:
 | `GET /api/v1/health/leb2` | v1 | No | No | No | No | No |
 | `POST /api/v1/User/login` | v1 | Provisioned | Yes* | Yes* | No | No |
 | `POST /api/v1/User/cookie` | v1 | Activated | Yes* | Yes* | No | No |
-| `POST /api/v1/User/logout` | v1 | Activated | Yes* | Yes* | No | No |
+| `POST /api/v1/User/logout` | v1 | Activated, allow already-unbound | Yes* | Yes* | No | No |
 | `GET /api/v1/Semester` | v1 | Activated | Yes* | Yes* | Yes | No |
 | `GET /api/v1/Class/{id}` | v1 | Activated | Yes* | Yes* | Yes | No |
 | `GET /api/v1/Activity/...` | v1 | Activated | Yes* | Yes* | Yes | Yes |
@@ -366,6 +458,7 @@ Possible error codes:
 | `400` | `DEVICE_ID_REQUIRED` | Device binding enforcement requires `X-Device-ID`. |
 | `400` | `DEVICE_ID_INVALID` | A device identifier or device metadata header is invalid. |
 | `400` | `CLIENT_VERSION_REQUIRED` | Client compatibility enforcement requires `X-Client-Version`. |
+| `400` | `CLIENT_VERSION_INVALID` | `X-Client-Version` has multiple values or is not a semantic version. |
 | `401` | `ACCESS_KEY_REQUIRED` | The `access-key` header was absent. |
 | `401` | `ACCESS_KEY_INVALID` | The access key was malformed or is not provisioned. |
 | `401` | `AUTHENTICATION_REQUIRED` | A required LEB2 session header was absent or empty. |
@@ -482,21 +575,24 @@ X-Device-ID: <stable-app-device-id>
 X-Device-Name: Example phone
 X-Device-Platform: android
 X-Device-OS-Version: 14
-X-Device-App-Version: 0.5.2
+X-Client-Version: 0.5.2
 ```
 
 Request body: none.
 
 Successful response: `204 No Content`.
 
-After logout, the same key can bind on another device. A client that logs in again
-on the same device remains idempotent. Device mismatch, missing device ID under
-enforcement, and access-key failures use the standard error codes above.
+After logout, the same key can bind on another device. Repeating the same logout
+returns `204 No Content` when no active binding remains. A different active device
+still receives `403 DEVICE_BINDING_MISMATCH`, and the active binding remains. Missing
+device ID under enforcement and access-key failures use the standard error codes above.
 
 ### GET `/api/v1/meta`
 
 Returns anonymous, cheap compatibility metadata. It does not access Supabase, LEB2,
 Selenium, access-key state, device binding, or client-version enforcement.
+The advertised versions and download URL are validated before application startup;
+this endpoint does not expose an unvalidated compatibility configuration.
 
 Request headers: none. Successful response — `200 OK`:
 
@@ -1054,7 +1150,7 @@ operations advertise both requirements.
 
 Use this order when enabling the three compatibility controls:
 
-1. Apply the Supabase `key_device_bindings` table and active-key unique index.
+1. Apply and verify the production key-revocation migration above.
 2. Configure the device HMAC secret without enabling enforcement.
 3. Deploy with `DeviceBinding:EnforcementEnabled=false`,
    `ClientCompatibility:EnforcementEnabled=false`, and

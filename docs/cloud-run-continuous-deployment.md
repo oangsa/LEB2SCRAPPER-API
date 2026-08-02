@@ -142,42 +142,97 @@ needs the value at runtime. The workflow therefore references Secret Manager ins
 
 ## One-time Supabase schema
 
-Apply the existing user identity prerequisite and device-binding table manually
-before deploying enforcement. The application intentionally has no migrations or
-automatic table creation:
+Apply this migration manually to the current production schema before deploying
+enforcement. The application intentionally has no migrations or automatic table
+creation:
 
 ```sql
-ALTER TABLE users
-ADD COLUMN leb2_user_id INTEGER;
+BEGIN;
 
-CREATE UNIQUE INDEX uq_users_leb2_user_id
-ON users (leb2_user_id)
+-- Preserve permanent user records, but make key-owned assignments disappear
+-- automatically when an operator revokes a key.
+
+ALTER TABLE public.user_keys
+DROP CONSTRAINT fk_user_keys_key;
+
+ALTER TABLE public.user_keys
+ADD CONSTRAINT fk_user_keys_key
+FOREIGN KEY (key_id)
+REFERENCES public.keys(id)
+ON DELETE CASCADE;
+
+
+ALTER TABLE public.key_device_bindings
+DROP CONSTRAINT fk_key_device_bindings_key;
+
+ALTER TABLE public.key_device_bindings
+ADD CONSTRAINT fk_key_device_bindings_key
+FOREIGN KEY (key_id)
+REFERENCES public.keys(id)
+ON DELETE CASCADE;
+
+
+-- Device binding invariant:
+-- one access key may have at most one active device.
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_key_device_bindings_active_key
+ON public.key_device_bindings (key_id)
+WHERE unbound_at IS NULL;
+
+
+-- Useful lookup for logout/binding checks.
+
+CREATE INDEX IF NOT EXISTS ix_key_device_bindings_key_device_hash
+ON public.key_device_bindings (key_id, device_id_hash);
+
+
+-- Existing access-key identity invariant.
+-- Keep/create this if production does not already have it.
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_users_leb2_user_id
+ON public.users (leb2_user_id)
 WHERE leb2_user_id IS NOT NULL;
 
-CREATE TABLE key_device_bindings (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    key_id UUID NOT NULL REFERENCES keys(id),
-    device_id_hash VARCHAR NOT NULL,
-    device_name VARCHAR,
-    platform VARCHAR,
-    os_version VARCHAR,
-    app_version VARCHAR,
-    bound_at TIMESTAMP WITHOUT TIME ZONE NOT NULL,
-    unbound_at TIMESTAMP WITHOUT TIME ZONE,
-    unbound_reason VARCHAR,
-    created_by VARCHAR NOT NULL,
-    updated_by VARCHAR NOT NULL,
-    created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
+-- Normalize the existing user_keys(key_id) unique constraint name without
+-- creating a redundant second unique constraint.
 
-CREATE UNIQUE INDEX uq_key_device_bindings_active_key
-ON key_device_bindings (key_id)
-WHERE unbound_at IS NULL;
+DO $$
+DECLARE
+    existing_constraint text;
+BEGIN
+    SELECT c.conname
+    INTO existing_constraint
+    FROM pg_constraint c
+    WHERE c.conrelid = 'public.user_keys'::regclass
+      AND c.contype = 'u'
+      AND pg_get_constraintdef(c.oid) = 'UNIQUE (key_id)'
+    LIMIT 1;
+
+    IF existing_constraint IS NULL THEN
+        ALTER TABLE public.user_keys
+        ADD CONSTRAINT uq_user_keys_key UNIQUE (key_id);
+    ELSIF existing_constraint <> 'uq_user_keys_key' THEN
+        EXECUTE format(
+            'ALTER TABLE public.user_keys RENAME CONSTRAINT %I TO uq_user_keys_key',
+            existing_constraint
+        );
+    END IF;
+END
+$$;
+
+COMMIT;
 ```
 
-If the schema already contains one of these objects, verify it instead of running a
-duplicate statement. An operator device reset marks only the active binding unbound:
+The migration intentionally does not add `ON DELETE CASCADE` from `users` to
+`user_keys`. Revoke a key with one statement; PostgreSQL removes the key,
+`user_keys` assignment, and device-binding history while preserving the user:
+
+```sql
+DELETE FROM public.keys
+WHERE id = '<key-id>';
+```
+
+An operator device reset marks only the active binding unbound:
 
 ```sql
 UPDATE key_device_bindings
@@ -190,6 +245,37 @@ WHERE key_id = '<key-uuid>'
 ```
 
 Account ownership in `user_keys` is never removed by logout or reset.
+
+Verify the production objects before enabling enforcement:
+
+```sql
+SELECT
+    conname,
+    pg_get_constraintdef(oid)
+FROM pg_constraint
+WHERE conrelid IN (
+    'public.user_keys'::regclass,
+    'public.key_device_bindings'::regclass
+)
+ORDER BY conrelid::regclass::text, conname;
+```
+
+```sql
+SELECT
+    indexname,
+    indexdef
+FROM pg_indexes
+WHERE schemaname = 'public'
+  AND tablename IN (
+      'users',
+      'user_keys',
+      'key_device_bindings'
+  )
+ORDER BY tablename, indexname;
+```
+
+The result must include `uq_user_keys_key`, `uq_users_leb2_user_id`,
+`uq_key_device_bindings_active_key`, and both key foreign keys with `ON DELETE CASCADE`.
 
 ## Versioned health and rollout
 

@@ -22,9 +22,13 @@ activities with another LEB2 user ID. The key relationship is `keys.id` to
 Device binding is temporary and separate from account ownership. When enabled,
 `X-Device-ID` is HMAC-SHA256 fingerprinted before persistence, one active device is
 allowed per key, and `POST /api/v1/User/logout` removes only that device binding.
-`X-Client-Version` is a separate frontend-build compatibility header. Anonymous
+`X-Client-Version` is the authoritative frontend-build version and populates stored
+device `app_version`; clients do not send a duplicate app-version header. Anonymous
 bootstrap and monitoring endpoints are `GET /api/v1/meta` and
 `GET /api/v1/health/leb2`.
+
+After the documented production migration, `DELETE FROM public.keys WHERE id = ...`
+cascades `user_keys` and `key_device_bindings` while preserving the `users` row.
 
 Production Cloud Run uses at most one active application instance. Caches,
 throttling, backoff, incident correlation, and health state are process-local;

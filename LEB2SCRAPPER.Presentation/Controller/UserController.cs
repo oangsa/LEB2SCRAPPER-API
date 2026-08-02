@@ -103,7 +103,7 @@ namespace LEB2SCRAPPER.Presentation.Controller
         }
 
         [HttpPost("logout")]
-        [AccessKeyAuthorize(AccessKeyRequirement.Activated)]
+        [AccessKeyAuthorize(AccessKeyRequirement.ActivatedAllowUnboundDevice)]
         [ProducesResponseType(StatusCodes.Status204NoContent)]
         [ProducesResponseType(typeof(ErrorResponse), StatusCodes.Status400BadRequest)]
         [ProducesResponseType(typeof(ErrorResponse), StatusCodes.Status401Unauthorized)]

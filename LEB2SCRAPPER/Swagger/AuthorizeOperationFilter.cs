@@ -80,11 +80,6 @@ public sealed class AuthorizeOperationFilter : IOperationFilter
             false);
         AddHeaderParameter(
             operation,
-            AccessKeyAuthorizationFilter.DeviceAppVersionHeaderName,
-            "Optional frontend app version recorded with the device binding.",
-            false);
-        AddHeaderParameter(
-            operation,
             ClientCompatibilityMiddleware.ClientVersionHeaderName,
             "Frontend application version, separate from API version.",
             _clientCompatibilityOptions.EnforcementEnabled);

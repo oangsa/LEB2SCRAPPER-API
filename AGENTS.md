@@ -368,11 +368,16 @@ The default container runs as Production, so its Swagger UI is not enabled unles
 
 When `DeviceBinding:Enabled=true`, protected requests carry a stable
 `X-Device-ID`; the server persists only an HMAC-SHA256 fingerprint. Optional metadata
-headers are `X-Device-Name`, `X-Device-Platform`, `X-Device-OS-Version`, and
-`X-Device-App-Version`. `POST /api/v1/User/logout` removes only the temporary active
-device binding and never removes `user_keys` ownership. `X-Client-Version` is a
-separate frontend-build compatibility header; `/api/v1/meta` and the health route
-remain exempt.
+headers are `X-Device-Name`, `X-Device-Platform`, and `X-Device-OS-Version`.
+`X-Client-Version` is the authoritative frontend-build version and populates stored
+device `app_version`. `POST /api/v1/User/logout` removes only the temporary active
+device binding and never removes `user_keys` ownership; a retry after unbinding returns
+`204`, while another active device receives `DEVICE_BINDING_MISMATCH`. `/api/v1/meta`
+and the health route remain exempt.
+
+After the documented production migration, deleting a row from `public.keys` cascades
+`user_keys` and `key_device_bindings` history while preserving the `users` row. The
+application never runs this migration automatically.
 
 The current `Authorization` header is passed through as an LEB2 session/cookie value. It is not a JWT authentication implementation and should not be documented or treated as one.
 

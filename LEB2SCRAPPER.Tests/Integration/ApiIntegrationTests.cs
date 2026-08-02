@@ -197,6 +197,164 @@ public class ApiIntegrationTests
     }
 
     [Fact]
+    public async Task ClientCompatibility_RejectsMissingVersion()
+    {
+        using var factory = CreateFactory(
+            new FakeActivityService(),
+            clientCompatibilityOptions: CreateEnforcedCompatibilityOptions());
+        using var client = CreateAuthenticatedClient(factory);
+
+        var response = await client.GetAsync("/api/v1/Activity/10");
+        var error = await response.Content.ReadFromJsonAsync<ErrorResponse>();
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(ApiErrorCodes.ClientVersionRequired, error?.ResponseCode);
+    }
+
+    [Fact]
+    public async Task ClientCompatibility_RejectsMalformedVersion()
+    {
+        using var factory = CreateFactory(
+            new FakeActivityService(),
+            clientCompatibilityOptions: CreateEnforcedCompatibilityOptions());
+        using var client = CreateAuthenticatedClient(factory);
+        client.DefaultRequestHeaders.Add("X-Client-Version", "banana");
+
+        var response = await client.GetAsync("/api/v1/Activity/10");
+        var error = await response.Content.ReadFromJsonAsync<ErrorResponse>();
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(ApiErrorCodes.ClientVersionInvalid, error?.ResponseCode);
+    }
+
+    [Fact]
+    public async Task ClientCompatibility_RejectsMultipleVersionValues()
+    {
+        using var factory = CreateFactory(
+            new FakeActivityService(),
+            clientCompatibilityOptions: CreateEnforcedCompatibilityOptions());
+        using var client = CreateAuthenticatedClient(factory);
+        client.DefaultRequestHeaders.Add("X-Client-Version", "0.5.0");
+        client.DefaultRequestHeaders.Add("X-Client-Version", "0.5.1");
+
+        var response = await client.GetAsync("/api/v1/Activity/10");
+        var error = await response.Content.ReadFromJsonAsync<ErrorResponse>();
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(ApiErrorCodes.ClientVersionInvalid, error?.ResponseCode);
+    }
+
+    [Fact]
+    public async Task ClientCompatibility_ComparesMultiDigitMinorVersionsNumerically()
+    {
+        var activityService = new FakeActivityService();
+        using var factory = CreateFactory(
+            activityService,
+            clientCompatibilityOptions: new ClientCompatibilityOptions
+            {
+                EnforcementEnabled = true,
+                MinimumClientVersion = "0.9.0",
+                LatestClientVersion = "0.9.0",
+                DownloadUrl = "https://example.test/releases"
+            });
+        using var client = CreateAuthenticatedClient(factory);
+        client.DefaultRequestHeaders.Add("X-Client-Version", "0.10.0");
+
+        var response = await client.GetAsync("/api/v1/Activity/10");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(1, activityService.InvocationCount);
+    }
+
+    [Fact]
+    public async Task ClientCompatibility_LeavesAnonymousBootstrapAndHealthExempt()
+    {
+        using var factory = CreateFactory(
+            new FakeActivityService(),
+            clientCompatibilityOptions: CreateEnforcedCompatibilityOptions());
+        using var client = factory.CreateClient();
+
+        var metadataResponse = await client.GetAsync("/api/v1/meta");
+        var healthResponse = await client.GetAsync("/api/v1/health/leb2");
+
+        Assert.Equal(HttpStatusCode.OK, metadataResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, healthResponse.StatusCode);
+    }
+
+    [Fact]
+    public async Task Logout_IsIdempotentButCannotUnbindAnotherActiveDevice()
+    {
+        var accessKeyService = new FakeAccessKeyService(
+            enforceDeviceBinding: true,
+            activeDeviceId: "device-a");
+        using var factory = CreateFactory(
+            new FakeActivityService(),
+            accessKeyService: accessKeyService,
+            deviceBindingOptions: new DeviceBindingOptions
+            {
+                Enabled = true,
+                EnforcementEnabled = true,
+                HmacSecret = "test-secret"
+            });
+        using var client = CreateAuthenticatedClient(factory);
+        client.DefaultRequestHeaders.Add(
+            AccessKeyAuthorizationFilter.DeviceIdHeaderName,
+            "device-a");
+
+        var firstLogout = await client.PostAsync(
+            "/api/v1/User/logout",
+            content: null);
+        var retryLogout = await client.PostAsync(
+            "/api/v1/User/logout",
+            content: null);
+
+        Assert.Equal(HttpStatusCode.NoContent, firstLogout.StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent, retryLogout.StatusCode);
+        Assert.Null(accessKeyService.ActiveDeviceId);
+
+        accessKeyService.Rebind("device-a");
+        client.DefaultRequestHeaders.Remove(
+            AccessKeyAuthorizationFilter.DeviceIdHeaderName);
+        client.DefaultRequestHeaders.Add(
+            AccessKeyAuthorizationFilter.DeviceIdHeaderName,
+            "device-b");
+
+        var wrongDeviceLogout = await client.PostAsync(
+            "/api/v1/User/logout",
+            content: null);
+        var error = await wrongDeviceLogout.Content.ReadFromJsonAsync<ErrorResponse>();
+
+        Assert.Equal(HttpStatusCode.Forbidden, wrongDeviceLogout.StatusCode);
+        Assert.Equal(ApiErrorCodes.DeviceBindingMismatch, error?.ResponseCode);
+        Assert.Equal("device-a", accessKeyService.ActiveDeviceId);
+    }
+
+    [Fact]
+    public async Task ProtectedRoute_StillRejectsUnboundDevice()
+    {
+        using var factory = CreateFactory(
+            new FakeActivityService(),
+            accessKeyService: new FakeAccessKeyService(
+                enforceDeviceBinding: true),
+            deviceBindingOptions: new DeviceBindingOptions
+            {
+                Enabled = true,
+                EnforcementEnabled = true,
+                HmacSecret = "test-secret"
+            });
+        using var client = CreateAuthenticatedClient(factory);
+        client.DefaultRequestHeaders.Add(
+            AccessKeyAuthorizationFilter.DeviceIdHeaderName,
+            "device-a");
+
+        var response = await client.GetAsync("/api/v1/Activity/10");
+        var error = await response.Content.ReadFromJsonAsync<ErrorResponse>();
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Equal(ApiErrorCodes.DeviceBindingRequired, error?.ResponseCode);
+    }
+
+    [Fact]
     public async Task ClassActivityRoute_PropagatesInputsAndReturnsFlatActivities()
     {
         var activityService = new FakeActivityService
@@ -1165,6 +1323,10 @@ public class ApiIntegrationTests
                     {
                         services.RemoveAll<ClientCompatibilityOptions>();
                         services.AddSingleton(clientCompatibilityOptions);
+                        services.RemoveAll<ClientCompatibilityConfiguration>();
+                        services.AddSingleton(
+                            ClientCompatibilityConfiguration.Create(
+                                clientCompatibilityOptions));
                     }
 
                     if (deviceBindingOptions is not null)
@@ -1199,6 +1361,17 @@ public class ApiIntegrationTests
         }
 
         return client;
+    }
+
+    private static ClientCompatibilityOptions CreateEnforcedCompatibilityOptions()
+    {
+        return new ClientCompatibilityOptions
+        {
+            EnforcementEnabled = true,
+            MinimumClientVersion = "0.5.0",
+            LatestClientVersion = "0.5.0",
+            DownloadUrl = "https://example.test/releases"
+        };
     }
 
     private sealed class StaticStatusReader : IOutboundRequestStatusReader
@@ -1247,13 +1420,26 @@ public class ApiIntegrationTests
     {
         private readonly bool _assigned;
         private readonly int? _leb2UserId;
+        private readonly bool _enforceDeviceBinding;
+        private string? _activeDeviceId;
 
         public FakeAccessKeyService(
             bool assigned = true,
-            int? leb2UserId = FakeLeb2UserId)
+            int? leb2UserId = FakeLeb2UserId,
+            bool enforceDeviceBinding = false,
+            string? activeDeviceId = null)
         {
             _assigned = assigned;
             _leb2UserId = leb2UserId;
+            _enforceDeviceBinding = enforceDeviceBinding;
+            _activeDeviceId = activeDeviceId;
+        }
+
+        public string? ActiveDeviceId => _activeDeviceId;
+
+        public void Rebind(string deviceId)
+        {
+            _activeDeviceId = deviceId;
         }
 
         public Task<AccessKeyState> ValidateProvisionedKeyAsync(
@@ -1325,6 +1511,61 @@ public class ApiIntegrationTests
             string name,
             CancellationToken cancellationToken = default)
         {
+            return Task.CompletedTask;
+        }
+
+        public Task EnsureDeviceBindingAsync(
+            AccessKeyState state,
+            DeviceBindingRequest? deviceBinding,
+            bool allowUnbound,
+            CancellationToken cancellationToken = default)
+        {
+            if (!_enforceDeviceBinding)
+            {
+                return Task.CompletedTask;
+            }
+
+            if (deviceBinding is null
+                || string.IsNullOrWhiteSpace(deviceBinding.DeviceId))
+            {
+                throw new DeviceIdRequiredException();
+            }
+
+            if (_activeDeviceId is null)
+            {
+                if (allowUnbound)
+                {
+                    return Task.CompletedTask;
+                }
+
+                throw new DeviceBindingRequiredException();
+            }
+
+            if (!string.Equals(
+                    _activeDeviceId,
+                    deviceBinding.DeviceId.Trim(),
+                    StringComparison.Ordinal))
+            {
+                throw new DeviceBindingMismatchException();
+            }
+
+            return Task.CompletedTask;
+        }
+
+        public Task LogoutAsync(
+            AccessKeyState state,
+            DeviceBindingRequest? deviceBinding,
+            CancellationToken cancellationToken = default)
+        {
+            if (deviceBinding is not null
+                && string.Equals(
+                    _activeDeviceId,
+                    deviceBinding.DeviceId.Trim(),
+                    StringComparison.Ordinal))
+            {
+                _activeDeviceId = null;
+            }
+
             return Task.CompletedTask;
         }
     }

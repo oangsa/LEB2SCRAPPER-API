@@ -72,6 +72,65 @@ public class AccessKeyAuthorizationFilterTests
             filter.OnAuthorizationAsync(context));
     }
 
+    [Fact]
+    public async Task LogoutRequirement_AllowsAlreadyUnboundDevice()
+    {
+        var requestContext = new AccessKeyRequestContext();
+        var context = CreateContext();
+        context.HttpContext.Request.Headers[AccessKeyAuthorizationFilter.HeaderName] =
+            KeyId.ToString();
+        context.HttpContext.Request.Headers[AccessKeyAuthorizationFilter.DeviceIdHeaderName] =
+            "device-one";
+        var service = new StubAccessKeyService(
+            new AccessKeyState(KeyId, UserId, "student-001", 1001));
+        var filter = new AccessKeyAuthorizationFilter(
+            service,
+            requestContext,
+            AccessKeyRequirement.ActivatedAllowUnboundDevice);
+
+        await filter.OnAuthorizationAsync(context);
+
+        Assert.True(service.AllowUnboundDevice);
+    }
+
+    [Fact]
+    public async Task LogoutRequirement_RejectsUnassignedKey()
+    {
+        var context = CreateContext();
+        context.HttpContext.Request.Headers[AccessKeyAuthorizationFilter.HeaderName] =
+            KeyId.ToString();
+        context.HttpContext.Request.Headers[AccessKeyAuthorizationFilter.DeviceIdHeaderName] =
+            "device-one";
+        var filter = CreateFilter(
+            AccessKeyRequirement.ActivatedAllowUnboundDevice,
+            new AccessKeyState(KeyId, null, null, null));
+
+        await Assert.ThrowsAsync<AccessKeyNotActivatedException>(() =>
+            filter.OnAuthorizationAsync(context));
+    }
+
+    [Fact]
+    public async Task ClientVersionPopulatesDeviceAppVersion()
+    {
+        var context = CreateContext();
+        context.HttpContext.Request.Headers[AccessKeyAuthorizationFilter.HeaderName] =
+            KeyId.ToString();
+        context.HttpContext.Request.Headers[AccessKeyAuthorizationFilter.DeviceIdHeaderName] =
+            "device-one";
+        context.HttpContext.Request.Headers["X-Client-Version"] = "0.5.0";
+        var deviceBindingContext = new DeviceBindingRequestContext();
+        var filter = new AccessKeyAuthorizationFilter(
+            new StubAccessKeyService(
+                new AccessKeyState(KeyId, UserId, "student-001", 1001)),
+            new AccessKeyRequestContext(),
+            AccessKeyRequirement.Activated,
+            deviceBindingContext);
+
+        await filter.OnAuthorizationAsync(context);
+
+        Assert.Equal("0.5.0", deviceBindingContext.Current?.AppVersion);
+    }
+
     private static AuthorizationFilterContext CreateContext()
     {
         var httpContext = new DefaultHttpContext();
@@ -96,6 +155,8 @@ public class AccessKeyAuthorizationFilterTests
     private sealed class StubAccessKeyService : IAccessKeyService
     {
         private readonly AccessKeyState _state;
+
+        public bool? AllowUnboundDevice { get; private set; }
 
         public StubAccessKeyService(AccessKeyState state)
         {
@@ -145,6 +206,16 @@ public class AccessKeyAuthorizationFilterTests
             CancellationToken cancellationToken = default)
         {
             throw new NotSupportedException();
+        }
+
+        public Task EnsureDeviceBindingAsync(
+            AccessKeyState state,
+            DeviceBindingRequest? deviceBinding,
+            bool allowUnbound,
+            CancellationToken cancellationToken = default)
+        {
+            AllowUnboundDevice = allowUnbound;
+            return Task.CompletedTask;
         }
     }
 }

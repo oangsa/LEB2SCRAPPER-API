@@ -2,6 +2,8 @@ namespace LEB2SCRAPPER.Infrastructure.Contracts.Compatibility;
 
 public sealed class ClientCompatibilityOptions
 {
+    public const string ClientVersionHeaderName = "X-Client-Version";
+
     public bool EnforcementEnabled { get; set; }
 
     public string MinimumClientVersion { get; set; } = "0.5.0";

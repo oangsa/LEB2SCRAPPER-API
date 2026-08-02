@@ -60,6 +60,8 @@ var clientCompatibilityOptions = new ClientCompatibilityOptions();
 builder.Configuration
     .GetSection("ClientCompatibility")
     .Bind(clientCompatibilityOptions);
+var clientCompatibilityConfiguration =
+    ClientCompatibilityConfiguration.Create(clientCompatibilityOptions);
 
 const string connectionStringName = "Production";
 const string connectionStringConfigurationKey = "ConnectionStrings:Production";
@@ -158,6 +160,7 @@ builder.Services.AddScoped<DeviceBindingRequestContext>();
 builder.Services.AddSingleton(apiVersioningOptions);
 builder.Services.AddSingleton(deviceBindingOptions);
 builder.Services.AddSingleton(clientCompatibilityOptions);
+builder.Services.AddSingleton(clientCompatibilityConfiguration);
 
 var outboundRequestGateOptions = new OutboundRequestGateOptions();
 builder.Configuration

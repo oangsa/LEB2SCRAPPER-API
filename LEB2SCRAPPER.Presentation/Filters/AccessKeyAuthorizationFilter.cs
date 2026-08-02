@@ -1,6 +1,7 @@
 using LEB2SCRAPPER.Entity.Exceptions.AccessKey;
 using LEB2SCRAPPER.Entity.Models.AccessKey;
 using LEB2SCRAPPER.Infrastructure.Contracts.AccessKey;
+using LEB2SCRAPPER.Infrastructure.Contracts.Compatibility;
 using LEB2SCRAPPER.Service.Contracts.Master;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Filters;
@@ -12,7 +13,8 @@ namespace LEB2SCRAPPER.Presentation.Filters;
 public enum AccessKeyRequirement
 {
     Provisioned,
-    Activated
+    Activated,
+    ActivatedAllowUnboundDevice
 }
 
 [AttributeUsage(AttributeTargets.Class | AttributeTargets.Method, Inherited = true)]
@@ -46,7 +48,6 @@ public sealed class AccessKeyAuthorizationFilter : IAsyncAuthorizationFilter
     public const string DeviceNameHeaderName = "X-Device-Name";
     public const string DevicePlatformHeaderName = "X-Device-Platform";
     public const string DeviceOsVersionHeaderName = "X-Device-OS-Version";
-    public const string DeviceAppVersionHeaderName = "X-Device-App-Version";
 
     private readonly IAccessKeyService _accessKeyService;
     private readonly AccessKeyRequestContext _requestContext;
@@ -81,7 +82,8 @@ public sealed class AccessKeyAuthorizationFilter : IAsyncAuthorizationFilter
             throw new AccessKeyInvalidException();
         }
 
-        var state = _requirement == AccessKeyRequirement.Activated
+        var state = _requirement is AccessKeyRequirement.Activated
+            or AccessKeyRequirement.ActivatedAllowUnboundDevice
             ? await _accessKeyService.ValidateActivatedKeyAsync(
                 keyId,
                 context.HttpContext.RequestAborted)
@@ -97,7 +99,8 @@ public sealed class AccessKeyAuthorizationFilter : IAsyncAuthorizationFilter
         await _accessKeyService.EnsureDeviceBindingAsync(
             state,
             deviceBinding,
-            _requirement == AccessKeyRequirement.Provisioned,
+            _requirement is AccessKeyRequirement.Provisioned
+                or AccessKeyRequirement.ActivatedAllowUnboundDevice,
             context.HttpContext.RequestAborted);
 
         _requestContext.Set(state);
@@ -118,7 +121,7 @@ public sealed class AccessKeyAuthorizationFilter : IAsyncAuthorizationFilter
             ReadHeader(request, DeviceNameHeaderName),
             ReadHeader(request, DevicePlatformHeaderName),
             ReadHeader(request, DeviceOsVersionHeaderName),
-            ReadHeader(request, DeviceAppVersionHeaderName));
+            ReadHeader(request, ClientCompatibilityOptions.ClientVersionHeaderName));
     }
 
     private static string? ReadHeader(

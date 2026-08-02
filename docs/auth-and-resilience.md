@@ -91,9 +91,10 @@ until then with `ACCESS_KEY_REAUTHENTICATION_REQUIRED`.
 successful LEB2 English name when available, with the existing Thai fields as a
 fallback. Audit fields use `leb2scrapper-api`.
 
-Deleting a `user_keys` row makes the key unassigned again. Deleting a `keys` row
-invalidates it and cascades its assignment under the supplied schema. The backend
-never moves a key from one user to another.
+Deleting a `user_keys` row makes the key unassigned again. After the production
+migration, deleting a `keys` row invalidates it and cascades both its assignment and
+device-binding history. The `users` row survives because user identity is not owned by
+one key. The backend never moves a key from one user to another.
 
 ## Temporary device binding
 
@@ -108,9 +109,11 @@ When `DeviceBinding:Enabled=true`, the backend receives a stable app-generated
 stores only the resulting fingerprint. Raw device IDs are never persisted or logged.
 This is a stable application identifier, not hardware attestation.
 
-Optional metadata headers are `X-Device-Name`, `X-Device-Platform`,
-`X-Device-OS-Version`, and `X-Device-App-Version`. They update the active binding
-when the same device logs in again. A first successful `/api/v1/User/login` binds the
+Optional metadata headers are `X-Device-Name`, `X-Device-Platform`, and
+`X-Device-OS-Version`. `X-Client-Version` is the authoritative frontend version and
+also populates stored device `app_version`; clients do not send a second app-version
+header. These values update the active binding when the same device logs in again. A
+first successful `/api/v1/User/login` binds the
 already successful account claim and device in one PostgreSQL transaction. Repeating
 the login on the same device is idempotent. A different active device gets
 `DEVICE_BINDING_MISMATCH`; a different LEB2 account still gets the existing permanent
@@ -118,10 +121,12 @@ ownership error. Reinstall and APK update can reuse the binding if the app prese
 the stable device ID.
 
 `POST /api/v1/User/logout` requires the assigned access key and, when enforcement is
-enabled, the matching `X-Device-ID`. It marks only that active binding unbound with a
-reason; it never removes `user_keys`, `users`, or the account relationship. A later
-device may then bind the still-owned key. An operator reset uses the same unbind
-operation with reason `operator-reset`.
+enabled, a valid `X-Device-ID`. A matching active device marks only that binding
+unbound; it never removes `user_keys`, `users`, or the account relationship. If no
+active binding remains, the same valid request returns `204` without recreating a
+binding. A different active device receives `403 DEVICE_BINDING_MISMATCH` and cannot
+release the active device. A later device may then bind the still-owned key. An
+operator reset uses the same unbind operation with reason `operator-reset`.
 
 `DeviceBinding:EnforcementEnabled` controls request rejection separately from
 `DeviceBinding:Enabled`. During rollout, enable persistence first while enforcement
@@ -129,32 +134,32 @@ is off. When enforcement is on, login may bind an unbound provisioned key, while
 cookie, logout, semester, class, and activity routes require the active matching
 device.
 
-Manual schema prerequisite (no migrations run by the application):
+Manual schema prerequisite (no migrations run by the application): apply the
+current-schema migration in [the API reference](api-reference.md#supabase-schema-prerequisite)
+or [the Cloud Run deployment guide](cloud-run-continuous-deployment.md#one-time-supabase-schema).
+The resulting definitions must be:
 
 ```sql
-CREATE TABLE key_device_bindings (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    key_id UUID NOT NULL REFERENCES keys(id),
-    device_id_hash VARCHAR NOT NULL,
-    device_name VARCHAR,
-    platform VARCHAR,
-    os_version VARCHAR,
-    app_version VARCHAR,
-    bound_at TIMESTAMP WITHOUT TIME ZONE NOT NULL,
-    unbound_at TIMESTAMP WITHOUT TIME ZONE,
-    unbound_reason VARCHAR,
-    created_by VARCHAR NOT NULL,
-    updated_by VARCHAR NOT NULL,
-    created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
+CONSTRAINT fk_user_keys_key
+FOREIGN KEY (key_id)
+REFERENCES public.keys(id)
+ON DELETE CASCADE
+
+CONSTRAINT fk_key_device_bindings_key
+FOREIGN KEY (key_id)
+REFERENCES public.keys(id)
+ON DELETE CASCADE
+
+CONSTRAINT uq_user_keys_key UNIQUE (key_id)
 
 CREATE UNIQUE INDEX uq_key_device_bindings_active_key
-ON key_device_bindings (key_id)
+ON public.key_device_bindings (key_id)
 WHERE unbound_at IS NULL;
 ```
 
-The repository locks the key row and the active binding in the same transaction;
+The migration also creates `uq_users_leb2_user_id` and
+`ix_key_device_bindings_key_device_hash`. Verify both key foreign keys report
+`ON DELETE CASCADE` before enabling enforcement. The repository locks the key row and the active binding in the same transaction;
 the partial unique index is the database backstop that permits at most one active
 device per key under concurrent requests.
 
@@ -173,9 +178,12 @@ device per key under concurrent requests.
 ```
 
 With `ClientCompatibility:EnforcementEnabled=true`, versions are parsed and compared
-as semantic versions. A supported-v1 client below `minimumClientVersion` receives
-`426 CLIENT_UPDATE_REQUIRED`; a version newer than `latestClientVersion` is allowed.
-Missing or malformed values receive `400`. Rejection occurs before access-key,
+as semantic versions. Minimum/latest versions and `DownloadUrl` are validated once at
+startup; invalid server configuration prevents startup. A supported-v1 client below
+`minimumClientVersion` receives `426 CLIENT_UPDATE_REQUIRED`; a version newer than
+`latestClientVersion` is allowed. Missing or blank values receive
+`400 CLIENT_VERSION_REQUIRED`; multiple or malformed values receive
+`400 CLIENT_VERSION_INVALID`. Rejection occurs before access-key,
 device, LEB2, Selenium, or service work. `/api/v1/meta`, `/api/v1/health/leb2`, and
 temporary anonymous aliases remain exempt.
 
@@ -258,6 +266,7 @@ or scraper failures.
 | `400` | `DEVICE_ID_REQUIRED` | Device binding enforcement requires `X-Device-ID`. |
 | `400` | `DEVICE_ID_INVALID` | A device identifier or metadata value is invalid. |
 | `400` | `CLIENT_VERSION_REQUIRED` | Client compatibility enforcement requires `X-Client-Version`. |
+| `400` | `CLIENT_VERSION_INVALID` | `X-Client-Version` has multiple values or is not a semantic version. |
 | `401` | `ACCESS_KEY_REQUIRED` | The `access-key` header is absent. |
 | `401` | `ACCESS_KEY_INVALID` | The access key is malformed or not provisioned. |
 | `401` | `AUTHENTICATION_REQUIRED` | Bearer header is absent or malformed. |
@@ -411,8 +420,7 @@ state. Otherwise each instance would have independent local state.
 
 ## Rollout order
 
-1. Apply the `key_device_bindings` table and active-key unique index manually in
-   Supabase.
+1. Apply and verify the current-schema key-revocation migration manually in Supabase.
 2. Configure `DeviceBinding:HmacSecret` without enabling enforcement.
 3. Deploy with device enforcement and client compatibility enforcement off and
    `ApiVersioning:LegacyRoutesEnabled=true`.
