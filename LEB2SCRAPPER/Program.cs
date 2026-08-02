@@ -3,6 +3,7 @@ using LEB2SCRAPPER.Contracts.Repository;
 using LEB2SCRAPPER.Contracts.Repository.Core;
 using LEB2SCRAPPER.Entity.Models.Response;
 using LEB2SCRAPPER.Infrastructure.Alerting;
+using LEB2SCRAPPER.Infrastructure.Contracts.AccessKey;
 using LEB2SCRAPPER.Infrastructure.Contracts.Alerting;
 using LEB2SCRAPPER.Infrastructure.Contracts.Authentication;
 using LEB2SCRAPPER.Infrastructure.Contracts.HttpService;
@@ -12,16 +13,45 @@ using LEB2SCRAPPER.Infrastructure.Outbound;
 using LEB2SCRAPPER.Service;
 using LEB2SCRAPPER.Service.Contracts.Core;
 using LEB2SCRAPPER.Service.Core;
+using LEB2SCRAPPER.Service.Contracts.Master;
+using LEB2SCRAPPER.Service.Master;
 using LEB2SCRAPPER.Repository.Core;
 using LEB2SCRAPPER.Repository.Caching;
+using LEB2SCRAPPER.Repository.Master;
+using LEB2SCRAPPER.Presentation.Filters;
 using LEB2SCRAPPER.Middleware;
 using LEB2SCRAPPER.Extensions;
 using LEB2SCRAPPER.Swagger;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.OpenApi.Models;
+using Npgsql;
 
 var builder = WebApplication.CreateBuilder(args);
+
+const string connectionStringName = "Supabase";
+const string connectionStringConfigurationKey = "ConnectionStrings:Supabase";
+var databaseConnectionString = builder.Configuration.GetConnectionString(connectionStringName);
+
+if (builder.Environment.IsProduction()
+    && string.IsNullOrWhiteSpace(databaseConnectionString))
+{
+    throw new InvalidOperationException(
+        $"{connectionStringConfigurationKey} is required in Production.");
+}
+
+if (!string.IsNullOrWhiteSpace(databaseConnectionString))
+{
+    try
+    {
+        _ = new NpgsqlConnectionStringBuilder(databaseConnectionString);
+    }
+    catch (ArgumentException)
+    {
+        throw new InvalidOperationException(
+            $"{connectionStringConfigurationKey} is not a valid connection string.");
+    }
+}
 
 // Add services to the container.
 // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
@@ -57,6 +87,10 @@ builder.Services
 builder.Services.AddScoped<ICoreAdapterManager, CoreAdapterManager>();
 builder.Services.AddScoped<IServiceManager, ServiceManager>();
 builder.Services.AddScoped<IRepositoryManager, RepositoryManager>();
+builder.Services.AddScoped<IAccessKeyRepository>(
+    _ => new AccessKeyRepository(databaseConnectionString));
+builder.Services.AddScoped<IAccessKeyService, AccessKeyService>();
+builder.Services.AddScoped<AccessKeyRequestContext>();
 
 var outboundRequestGateOptions = new OutboundRequestGateOptions();
 builder.Configuration
@@ -133,6 +167,15 @@ builder.Services.AddSwaggerGen(options =>
             BearerFormat = "Opaque LEB2 session cookie",
             Description = "Use Authorization: Bearer <session-cookie-value>. "
                 + "Legacy raw Authorization values remain accepted during migration."
+        });
+    options.AddSecurityDefinition(
+        "AccessKey",
+        new OpenApiSecurityScheme
+        {
+            Type = SecuritySchemeType.ApiKey,
+            Name = AccessKeyAuthorizationFilter.HeaderName,
+            In = ParameterLocation.Header,
+            Description = "Use access-key: <provisioned UUID>."
         });
     options.OperationFilter<AuthorizeOperationFilter>();
 });

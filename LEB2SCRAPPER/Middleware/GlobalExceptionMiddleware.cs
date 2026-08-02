@@ -1,9 +1,11 @@
+using LEB2SCRAPPER.Entity.Exceptions.AccessKey;
 using LEB2SCRAPPER.Entity.Exceptions.ActivityCustomException;
 using LEB2SCRAPPER.Entity.Exceptions.Leb2Integration;
 using LEB2SCRAPPER.Entity.Exceptions.ScrapingCustomException;
 using LEB2SCRAPPER.Entity.Exceptions.UserCustomException;
 using LEB2SCRAPPER.Entity.Models.Response;
 using LEB2SCRAPPER.Infrastructure.Contracts.Authentication;
+using LEB2SCRAPPER.Infrastructure.Contracts.AccessKey;
 using LEB2SCRAPPER.Security;
 using System.Net;
 using System.Text.Json;
@@ -28,7 +30,8 @@ public class GlobalExceptionMiddleware
 
     public async Task InvokeAsync(
         HttpContext context,
-        ILeb2SessionCredential sessionCredential)
+        ILeb2SessionCredential sessionCredential,
+        AccessKeyRequestContext accessKeyContext)
     {
         try
         {
@@ -42,16 +45,22 @@ public class GlobalExceptionMiddleware
         }
         catch (Exception ex)
         {
-            var baseException = ex.GetBaseException();
+            var logException = ex is AccessKeyDatabaseException
+                ? ex
+                : ex.GetBaseException();
+            var accessKey = accessKeyContext.Current?.KeyId.ToString();
             var exceptionType = SensitiveDataRedactor.Redact(
-                baseException.GetType().Name,
-                sessionCredential.Value);
+                logException.GetType().Name,
+                sessionCredential.Value,
+                accessKey);
             var message = SensitiveDataRedactor.Redact(
-                baseException.Message,
-                sessionCredential.Value);
+                logException.Message,
+                sessionCredential.Value,
+                accessKey);
             var traceIdentifier = SensitiveDataRedactor.Redact(
                 context.TraceIdentifier,
-                sessionCredential.Value);
+                sessionCredential.Value,
+                accessKey);
 
             _logger.LogError(
                 "Unhandled exception {ExceptionType}: {Message}. Trace identifier: {TraceIdentifier}",
@@ -79,6 +88,60 @@ public class GlobalExceptionMiddleware
 
         switch (exception)
         {
+            case AccessKeyRequiredException:
+                response.Message = "An access key is required.";
+                response.ResponseCode = ApiErrorCodes.AccessKeyRequired;
+                context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                break;
+
+            case AccessKeyInvalidException:
+                response.Message = "The access key is invalid.";
+                response.ResponseCode = ApiErrorCodes.AccessKeyInvalid;
+                context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                break;
+
+            case AccessKeyNotActivatedException:
+                response.Message = "The access key must be activated through /User/login first.";
+                response.ResponseCode = ApiErrorCodes.AccessKeyNotActivated;
+                context.Response.StatusCode = StatusCodes.Status403Forbidden;
+                break;
+
+            case AccessKeyAlreadyAssignedException:
+                response.Message = "The access key is already assigned to another account.";
+                response.ResponseCode = ApiErrorCodes.AccessKeyAlreadyAssigned;
+                context.Response.StatusCode = StatusCodes.Status403Forbidden;
+                break;
+
+            case AccessKeyIdentityMismatchException:
+                response.Message = "The access key cannot be used with this account.";
+                response.ResponseCode = ApiErrorCodes.AccessKeyIdentityMismatch;
+                context.Response.StatusCode = StatusCodes.Status403Forbidden;
+                break;
+
+            case AccessKeyReauthenticationRequiredException:
+                response.Message = "The access key requires reauthentication.";
+                response.ResponseCode = ApiErrorCodes.AccessKeyReauthenticationRequired;
+                context.Response.StatusCode = StatusCodes.Status403Forbidden;
+                break;
+
+            case AccessKeyIdentityConflictException:
+                response.Message = "The access key identity cannot be registered.";
+                response.ResponseCode = ApiErrorCodes.AccessKeyIdentityConflict;
+                context.Response.StatusCode = StatusCodes.Status409Conflict;
+                break;
+
+            case AccessKeyDatabaseException databaseException when databaseException.IsTransient:
+                response.Message = "Access-key authorization is temporarily unavailable.";
+                response.ResponseCode = ApiErrorCodes.AccessKeyStoreUnavailable;
+                context.Response.StatusCode = StatusCodes.Status503ServiceUnavailable;
+                break;
+
+            case AccessKeyDatabaseException:
+                response.Message = "An internal server error occurred.";
+                response.ResponseCode = ApiErrorCodes.UnexpectedError;
+                context.Response.StatusCode = StatusCodes.Status500InternalServerError;
+                break;
+
             case SessionExpiredException:
                 response.Message = "The LEB2 session has expired or is invalid.";
                 response.ResponseCode = ApiErrorCodes.SessionExpired;

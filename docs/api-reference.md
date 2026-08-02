@@ -25,20 +25,35 @@ All request and response bodies use JSON unless stated otherwise.
 
 ## Endpoint summary
 
-| Method | Path | LEB2 session required | Request body |
-| --- | --- | --- | --- |
-| `POST` | `/User/login` | No | Credentials |
-| `POST` | `/User/cookie` | No | Credentials |
-| `GET` | `/Semester` | Yes | None |
-| `GET` | `/Class/{id}` | Yes | None |
-| `GET` | `/Activity/{semesterId}/{classId}` | Yes | None |
-| `GET` | `/Activity/{semesterId}` | Yes | None |
-| `GET` | `/Activity/{semesterId}/snapshot` | Yes | None |
-| `GET` | `/health/leb2` | No | None |
+| Method | Path | Access key | LEB2 session required | Request body |
+| --- | --- | --- | --- | --- |
+| `POST` | `/User/login` | Provisioned | No | Credentials |
+| `POST` | `/User/cookie` | Activated | No | Credentials |
+| `GET` | `/Semester` | Activated | Yes | None |
+| `GET` | `/Class/{id}` | Activated | Yes | None |
+| `GET` | `/Activity/{semesterId}/{classId}` | Activated | Yes | None |
+| `GET` | `/Activity/{semesterId}` | Activated | Yes | None |
+| `GET` | `/Activity/{semesterId}/snapshot` | Activated | Yes | None |
+| `GET` | `/health/leb2` | Anonymous | No | None |
 
 ## Authentication
 
-Protected endpoints require the complete client-held LEB2 session cookie:
+Every route except `GET /health/leb2` requires the application access key:
+
+```http
+access-key: <uuid-from-keys.id>
+```
+
+The UUID is the `keys.id` value manually provisioned in Supabase. It is a secret
+per-user API credential, not a JWT. An activated key is bound to one local student
+through `keys.id`, `user_keys`, `users.student_id`, and `users.leb2_user_id`.
+It cannot be used to log in as another student, obtain that student's LEB2 session,
+or request activities with that student's numeric LEB2 ID. Do not put it in a URL,
+query string, request body, or log.
+`POST /User/login` accepts a provisioned but unassigned key. `/User/cookie` and
+all data routes require an assigned key.
+
+Protected data endpoints also require the complete client-held LEB2 session cookie:
 
 ```http
 Authorization: Bearer <leb2-session-cookie>
@@ -55,6 +70,51 @@ Every activity endpoint also requires:
 ```http
 X-LEB2-USER-ID: <positive-integer-user-id>
 ```
+
+This header remains for compatibility. It is a client-supplied assertion and must
+match the numeric LEB2 identity stored for the access-key owner. The opaque
+`Authorization` session value is separate and is never parsed to derive identity.
+
+The `access-key` header name is case-insensitive. Its value must be one UUID from
+`keys.id`; send exactly one value. The API never accepts the key in a URL, query
+string, or normal request body.
+
+### Access-key enrollment
+
+The owner provisions keys directly in Supabase. The API has no key-generation or
+key-management endpoint.
+
+Example manual provisioning with a fake UUID:
+
+```sql
+INSERT INTO keys (id, created_by, updated_by)
+VALUES (
+    '00000000-0000-4000-8000-000000000001',
+    'admin',
+    'admin'
+);
+```
+
+Use the key once with `/User/login`. After successful LEB2 authentication, the API:
+
+1. Normalizes the login username into `users.student_id`.
+2. Persists authoritative LEB2 `User.Id` as `users.leb2_user_id`.
+3. Builds `users.name` from the English LEB2 name, falling back to Thai fields.
+4. Upserts the user by `student_id` and claims the key in the same PostgreSQL transaction.
+
+An invalid LEB2 login creates neither the user nor the assignment. A key already
+assigned to another student is never transferred automatically. Existing users
+with null `leb2_user_id` are initialized by their next successful `/User/login`;
+activity requests fail closed until that happens.
+
+| Key state | `/User/login` | `/User/cookie` and data routes |
+| --- | --- | --- |
+| Missing from `keys` | Rejected | Rejected |
+| Provisioned, unassigned | Allowed | Rejected with `ACCESS_KEY_NOT_ACTIVATED` |
+| Assigned in `user_keys` | Allowed, idempotent for the owner | Allowed when `leb2_user_id` is initialized |
+
+To revoke access, delete the `keys` row. To make a key claimable again, delete its
+`user_keys` row. The supplied foreign-key cascades clean up related assignments.
 
 ## Shared request model
 
@@ -73,6 +133,9 @@ to `false`.
 
 The backend uses credentials only for the current outbound LEB2 request and does not
 persist them.
+
+The successful `/User/login` response remains the existing LEB2 user profile shape;
+it does not return the access key or local database identifiers.
 
 ## Shared response models
 
@@ -148,8 +211,15 @@ Possible error codes:
 | HTTP status | `responseCode` | Meaning |
 | --- | --- | --- |
 | `400` | `INVALID_REQUEST` | An argument or operation was invalid. |
+| `401` | `ACCESS_KEY_REQUIRED` | The `access-key` header was absent. |
+| `401` | `ACCESS_KEY_INVALID` | The access key was malformed or is not provisioned. |
 | `401` | `AUTHENTICATION_REQUIRED` | A required LEB2 session header was absent or empty. |
 | `401` | `SESSION_EXPIRED` | LEB2 rejected or redirected the supplied session. |
+| `403` | `ACCESS_KEY_NOT_ACTIVATED` | The key must first be claimed by a successful `/User/login`. |
+| `403` | `ACCESS_KEY_ALREADY_ASSIGNED` | The key belongs to another account. |
+| `403` | `ACCESS_KEY_IDENTITY_MISMATCH` | The key cannot be used with the submitted student or LEB2 user ID. |
+| `403` | `ACCESS_KEY_REAUTHENTICATION_REQUIRED` | The local user must complete `/User/login` again to initialize identity. |
+| `409` | `ACCESS_KEY_IDENTITY_CONFLICT` | Successful LEB2 identity conflicts with an established local identity. |
 | `404` | `RESOURCE_NOT_FOUND` | The requested user, resource, or class/semester relationship was not found. |
 | `408` | `LEB2_UNAVAILABLE` | The request timed out. |
 | `429` | `CLIENT_THROTTLE_ACTIVE` | The client has too many active or queued LEB2 requests. |
@@ -158,10 +228,12 @@ Possible error codes:
 | `502` | `SCRAPE_RESPONSE_CHANGED` | LEB2 returned an unexpected HTML or JSON structure. |
 | `503` | `LEB2_UNAVAILABLE` | A transient LEB2 network, rate-limit, or server failure occurred. |
 | `503` | `REQUEST_BACKOFF_ACTIVE` | This LEB2 operation is temporarily paused after a recent failure. |
+| `503` | `ACCESS_KEY_STORE_UNAVAILABLE` | Supabase access-key validation is temporarily unavailable. |
 
 Responses with `CLIENT_THROTTLE_ACTIVE` or `REQUEST_BACKOFF_ACTIVE` include a
-`Retry-After` response header. Authentication failures include
-`WWW-Authenticate: Bearer`.
+`Retry-After` response header. LEB2 session failures include
+`WWW-Authenticate: Bearer`; access-key failures use the `ACCESS_KEY_*` response
+codes and do not describe the access key as a bearer JWT.
 
 ### Validation error
 
@@ -191,7 +263,14 @@ The keys and messages inside `validationErrors` depend on which input failed.
 Authenticates directly against the LEB2 login API and maps the successful result to
 a user profile.
 
-Authentication: none.
+Authentication: `access-key` header with a provisioned UUID. An unassigned key is
+allowed here so this successful LEB2 login can claim it.
+
+Required header:
+
+```http
+access-key: 00000000-0000-4000-8000-000000000001
+```
 
 Request body:
 
@@ -219,11 +298,16 @@ Successful response — `200 OK`:
 Relevant error responses:
 
 - `400 INVALID_REQUEST` for an invalid request body or argument.
+- `401 ACCESS_KEY_REQUIRED` or `401 ACCESS_KEY_INVALID` when the access key is absent, malformed, or unknown.
+- `403 ACCESS_KEY_ALREADY_ASSIGNED` when another account already owns the key.
+- `403 ACCESS_KEY_IDENTITY_MISMATCH` when an assigned key is used with another username.
+- `409 ACCESS_KEY_IDENTITY_CONFLICT` when successful LEB2 `User.Id` conflicts with the established local identity.
 - `404 RESOURCE_NOT_FOUND` when the credentials are rejected or no user is found.
 - `429 CLIENT_THROTTLE_ACTIVE` when this client has too many queued requests.
 - `502 LEB2_UNAVAILABLE` when LEB2 rejects or cannot complete the upstream request.
 - `502 SCRAPE_RESPONSE_CHANGED` for an unexpected successful LEB2 response shape.
 - `503 LEB2_UNAVAILABLE` or `503 REQUEST_BACKOFF_ACTIVE` for transient failures.
+- `503 ACCESS_KEY_STORE_UNAVAILABLE` when Supabase access-key persistence is temporarily unavailable.
 - `500 UNEXPECTED_ERROR` for an unexpected server error.
 
 ### POST `/User/cookie`
@@ -231,7 +315,16 @@ Relevant error responses:
 Signs in through Selenium and returns the complete LEB2 session cookie needed by
 protected endpoints.
 
-Authentication: none.
+Authentication: `access-key` header with an already assigned UUID. The key must
+first be claimed by a successful `/User/login` and must have a stored
+`users.leb2_user_id`. Legacy assigned users with a null value must complete
+`/User/login` again before requesting a cookie.
+
+Required header:
+
+```http
+access-key: 00000000-0000-4000-8000-000000000001
+```
 
 Request body:
 
@@ -263,11 +356,16 @@ Authorization: Bearer session_cookie_name=fake-session-value; another_cookie=fak
 Relevant error responses:
 
 - `400 INVALID_REQUEST` for an invalid request body.
+- `401 ACCESS_KEY_REQUIRED` or `401 ACCESS_KEY_INVALID` when the access key is absent, malformed, or unknown.
+- `403 ACCESS_KEY_NOT_ACTIVATED` when `/User/login` has not claimed the key yet.
+- `403 ACCESS_KEY_IDENTITY_MISMATCH` when the credentials belong to another student.
+- `403 ACCESS_KEY_REAUTHENTICATION_REQUIRED` when local identity data is incomplete.
 - `404 RESOURCE_NOT_FOUND` if the login completes without a usable result.
 - `429 CLIENT_THROTTLE_ACTIVE` when this client has too many queued requests.
 - `502 LEB2_UNAVAILABLE` when LEB2 does not accept the credentials or cannot complete the login.
 - `502 SCRAPE_RESPONSE_CHANGED` when the LEB2 login page no longer matches the scraper.
 - `503 LEB2_UNAVAILABLE` or `503 REQUEST_BACKOFF_ACTIVE` for transient failures.
+- `503 ACCESS_KEY_STORE_UNAVAILABLE` when Supabase access-key validation is temporarily unavailable.
 - `500 UNEXPECTED_ERROR` for an unexpected server error.
 
 ### GET `/Semester`
@@ -277,6 +375,7 @@ Returns the semester IDs visible to the authenticated LEB2 session.
 Required header:
 
 ```http
+access-key: 00000000-0000-4000-8000-000000000001
 Authorization: Bearer <leb2-session-cookie>
 ```
 
@@ -300,10 +399,13 @@ If no semesters are found, the response is:
 Relevant error responses:
 
 - `401 AUTHENTICATION_REQUIRED` when the session header is absent or empty.
+- `401 ACCESS_KEY_REQUIRED` or `401 ACCESS_KEY_INVALID` when the access key is absent, malformed, or unknown.
+- `403 ACCESS_KEY_NOT_ACTIVATED` when the key has not been claimed through `/User/login`.
 - `401 SESSION_EXPIRED` when LEB2 rejects the session.
 - `429 CLIENT_THROTTLE_ACTIVE` when this client has too many queued requests.
 - `502 SCRAPE_RESPONSE_CHANGED` when the rendered page no longer matches the scraper.
 - `503 LEB2_UNAVAILABLE` or `503 REQUEST_BACKOFF_ACTIVE` for transient failures.
+- `503 ACCESS_KEY_STORE_UNAVAILABLE` when Supabase access-key validation is temporarily unavailable.
 - `500 UNEXPECTED_ERROR` for an unexpected server error.
 
 ### GET `/Class/{id}`
@@ -319,6 +421,7 @@ Route parameter:
 Required header:
 
 ```http
+access-key: 00000000-0000-4000-8000-000000000001
 Authorization: Bearer <leb2-session-cookie>
 ```
 
@@ -328,6 +431,7 @@ Example request:
 
 ```http
 GET /Class/101
+access-key: 00000000-0000-4000-8000-000000000001
 Authorization: Bearer <leb2-session-cookie>
 ```
 
@@ -355,6 +459,8 @@ If no classes are found, the response is:
 Relevant error responses:
 
 - `401 AUTHENTICATION_REQUIRED` when the session header is absent or empty.
+- `401 ACCESS_KEY_REQUIRED` or `401 ACCESS_KEY_INVALID` when the access key is absent, malformed, or unknown.
+- `403 ACCESS_KEY_NOT_ACTIVATED` when the key has not been claimed through `/User/login`.
 - `401 SESSION_EXPIRED` when LEB2 rejects the session.
 - `429 CLIENT_THROTTLE_ACTIVE` when this client has too many queued requests.
 - `502 LEB2_UNAVAILABLE` for an invalid or unusable LEB2 class request.
@@ -381,6 +487,7 @@ Route parameters:
 Required headers:
 
 ```http
+access-key: 00000000-0000-4000-8000-000000000001
 Authorization: Bearer <leb2-session-cookie>
 X-LEB2-USER-ID: 2001
 ```
@@ -391,6 +498,7 @@ Example request:
 
 ```http
 GET /Activity/101/3001
+access-key: 00000000-0000-4000-8000-000000000001
 Authorization: Bearer <leb2-session-cookie>
 X-LEB2-USER-ID: 2001
 ```
@@ -450,6 +558,8 @@ Relevant error responses:
 - `400 INVALID_REQUEST` when an integer route value is less than one, or when
   `X-LEB2-USER-ID` is missing, non-integer, or less than one.
 - `401 AUTHENTICATION_REQUIRED` when the session header is absent or empty.
+- `401 ACCESS_KEY_REQUIRED` or `401 ACCESS_KEY_INVALID` when the access key is absent, malformed, or unknown.
+- `403 ACCESS_KEY_NOT_ACTIVATED` when the key has not been claimed through `/User/login`.
 - `401 SESSION_EXPIRED` when LEB2 rejects the session.
 - `404 RESOURCE_NOT_FOUND` when the class does not belong to the supplied semester.
 - `429 CLIENT_THROTTLE_ACTIVE` when this client has too many queued requests.
@@ -475,6 +585,7 @@ Route parameter:
 Required headers:
 
 ```http
+access-key: 00000000-0000-4000-8000-000000000001
 Authorization: Bearer <leb2-session-cookie>
 X-LEB2-USER-ID: 2001
 ```
@@ -485,6 +596,7 @@ Example request:
 
 ```http
 GET /Activity/101
+access-key: 00000000-0000-4000-8000-000000000001
 Authorization: Bearer <leb2-session-cookie>
 X-LEB2-USER-ID: 2001
 ```
@@ -554,6 +666,7 @@ Route parameter:
 Required headers:
 
 ```http
+access-key: 00000000-0000-4000-8000-000000000001
 Authorization: Bearer <leb2-session-cookie>
 X-LEB2-USER-ID: 2001
 ```
@@ -564,6 +677,7 @@ Example request:
 
 ```http
 GET /Activity/101/snapshot
+access-key: 00000000-0000-4000-8000-000000000001
 Authorization: Bearer <leb2-session-cookie>
 X-LEB2-USER-ID: 2001
 ```
@@ -640,7 +754,8 @@ Relevant error responses are the same as
 Returns locally observed request-gate/backoff state for each fixed LEB2 dependency.
 It does not contact LEB2 and is not a live upstream reachability probe.
 
-Authentication: none.
+Authentication: none. This is the only route that does not require either
+`access-key` or `Authorization`.
 
 Request body: none.
 
@@ -720,3 +835,7 @@ Swagger UI is available only when `ASPNETCORE_ENVIRONMENT=Development`:
 
 The normal Cloud Run deployment runs with `ASPNETCORE_ENVIRONMENT=Production`, so
 Swagger is disabled there.
+
+Swagger exposes `access-key` as an API-key header scheme and the existing opaque
+LEB2 bearer scheme. Login and cookie operations advertise only `access-key`; data
+operations advertise both requirements.

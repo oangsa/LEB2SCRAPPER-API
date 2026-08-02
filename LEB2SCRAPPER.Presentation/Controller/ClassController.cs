@@ -1,4 +1,5 @@
 using LEB2SCRAPPER.Entity.Models.Response;
+using LEB2SCRAPPER.Presentation.Filters;
 using LEB2SCRAPPER.Infrastructure.Contracts.Authentication;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Http;
@@ -25,10 +26,12 @@ namespace LEB2SCRAPPER.Presentation.Controller
         }
 
         [HttpGet("{id:int}")]
+        [AccessKeyAuthorize(AccessKeyRequirement.Activated)]
         [Authorize]
         [ProducesResponseType(StatusCodes.Status200OK)]
         [ProducesResponseType(typeof(ValidationErrorResponse), StatusCodes.Status400BadRequest)]
         [ProducesResponseType(typeof(ErrorResponse), StatusCodes.Status401Unauthorized)]
+        [ProducesResponseType(typeof(ErrorResponse), StatusCodes.Status403Forbidden)]
         [ProducesResponseType(typeof(ErrorResponse), StatusCodes.Status502BadGateway)]
         [ProducesResponseType(typeof(ErrorResponse), StatusCodes.Status503ServiceUnavailable)]
         [ProducesResponseType(StatusCodes.Status500InternalServerError)]

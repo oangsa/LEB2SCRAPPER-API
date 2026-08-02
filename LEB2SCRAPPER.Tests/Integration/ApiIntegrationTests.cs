@@ -2,13 +2,16 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
+using LEB2SCRAPPER.Entity.Exceptions.AccessKey;
 using LEB2SCRAPPER.Entity.Exceptions.Leb2Integration;
 using LEB2SCRAPPER.Entity.Models.Activity;
+using LEB2SCRAPPER.Entity.Models.AccessKey;
 using LEB2SCRAPPER.Entity.Models.Authentication;
 using LEB2SCRAPPER.Entity.Models.Class;
 using LEB2SCRAPPER.Entity.Models.Response;
 using LEB2SCRAPPER.Entity.Models.Users;
 using LEB2SCRAPPER.Infrastructure.Contracts.Outbound;
+using LEB2SCRAPPER.Presentation.Filters;
 using LEB2SCRAPPER.Service.Contracts.Core;
 using LEB2SCRAPPER.Service.Contracts.Master;
 using Microsoft.AspNetCore.Hosting;
@@ -22,6 +25,12 @@ namespace LEB2SCRAPPER.Tests.Integration;
 public class ApiIntegrationTests
 {
     private const string UserIdHeaderName = "X-LEB2-USER-ID";
+    private const string FakeStudentId = "fake-student";
+    private const int FakeLeb2UserId = 123;
+    private static readonly Guid FakeAccessKeyId =
+        Guid.Parse("00000000-0000-0000-0000-000000000001");
+    private static readonly Guid FakeAssignedUserId =
+        Guid.Parse("00000000-0000-0000-0000-000000000002");
 
     [Fact]
     public async Task ClassActivityRoute_PropagatesInputsAndReturnsFlatActivities()
@@ -180,6 +189,378 @@ public class ApiIntegrationTests
 
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
         Assert.Equal(ApiErrorCodes.AuthenticationRequired, error?.ResponseCode);
+    }
+
+    [Theory]
+    [InlineData("/Semester")]
+    [InlineData("/Class/10")]
+    [InlineData("/Activity/10")]
+    [InlineData("/Activity/10/20")]
+    [InlineData("/Activity/10/snapshot")]
+    public async Task Leb2Routes_RequireAccessKey(string path)
+    {
+        using var factory = CreateFactory(new FakeActivityService());
+        using var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", "fake-session");
+        client.DefaultRequestHeaders.Add(UserIdHeaderName, "123");
+
+        var response = await client.GetAsync(path);
+        var error = await response.Content.ReadFromJsonAsync<ErrorResponse>();
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        Assert.Equal(ApiErrorCodes.AccessKeyRequired, error?.ResponseCode);
+    }
+
+    [Fact]
+    public async Task ProtectedRoute_WithAssignedAccessKeyAndMissingLeb2Session_UsesExistingAuthFailure()
+    {
+        using var factory = CreateFactory(new FakeActivityService());
+        using var client = CreateAuthenticatedClient(factory);
+        client.DefaultRequestHeaders.Authorization = null;
+
+        var response = await client.GetAsync("/Semester");
+        var error = await response.Content.ReadFromJsonAsync<ErrorResponse>();
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        Assert.Equal(ApiErrorCodes.AuthenticationRequired, error?.ResponseCode);
+    }
+
+    [Fact]
+    public async Task ProtectedRoute_WithUnassignedAccessKeyIsRejectedBeforeService()
+    {
+        using var factory = CreateFactory(
+            new FakeActivityService(),
+            accessKeyService: new FakeAccessKeyService(assigned: false));
+        using var client = CreateAuthenticatedClient(factory);
+
+        var response = await client.GetAsync("/Semester");
+        var error = await response.Content.ReadFromJsonAsync<ErrorResponse>();
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Equal(ApiErrorCodes.AccessKeyNotActivated, error?.ResponseCode);
+    }
+
+    [Fact]
+    public async Task Login_RequiresProvisionedAccessKeyBeforeCallingUserService()
+    {
+        var userService = new FakeUserService
+        {
+            LoginHandler = (_, _, _) =>
+                throw new InvalidOperationException("User service should not run.")
+        };
+        using var factory = CreateFactory(
+            new FakeActivityService(),
+            userService: userService);
+        using var client = factory.CreateClient();
+
+        var response = await client.PostAsJsonAsync(
+            "/User/login",
+            new Credentials
+            {
+                Username = "fake-student",
+                Password = "fake-password"
+            });
+        var error = await response.Content.ReadFromJsonAsync<ErrorResponse>();
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        Assert.Equal(ApiErrorCodes.AccessKeyRequired, error?.ResponseCode);
+    }
+
+    [Fact]
+    public async Task Login_WithProvisionedAccessKeyPreservesSuccessfulResponse()
+    {
+        var accessKeyId = FakeAccessKeyId;
+        var userService = new FakeUserService
+        {
+            LoginHandler = (credentials, accessKeyState, _) =>
+            {
+                Assert.Equal("fake-student", credentials.Username);
+                Assert.Equal(accessKeyId, accessKeyState.KeyId);
+                return Task.FromResult<User?>(new User
+                {
+                    Id = 42,
+                            KmuttId = "student-001",
+                    NameThai = "ชื่อ",
+                    NameEnglish = "Example",
+                    SurnameThai = "นามสกุล",
+                    SurnameEnglish = "Student"
+                });
+            }
+        };
+        using var factory = CreateFactory(
+            new FakeActivityService(),
+            userService: userService);
+        using var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Add(
+            AccessKeyAuthorizationFilter.HeaderName,
+            accessKeyId.ToString());
+
+        var response = await client.PostAsJsonAsync(
+            "/User/login",
+            new Credentials
+            {
+                Username = "fake-student",
+                Password = "fake-password"
+            });
+        var body = await response.Content.ReadFromJsonAsync<JsonDocument>();
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(42, body!.RootElement.GetProperty("id").GetInt32());
+        Assert.Equal(
+            "student-001",
+            body.RootElement.GetProperty("kmuttId").GetString());
+    }
+
+    [Fact]
+    public async Task Login_PassesAccessKeyStateToUserServiceForIdentityCheck()
+    {
+        var userService = new FakeUserService
+        {
+            LoginHandler = (credentials, accessKeyState, _) =>
+            {
+                Assert.Equal(FakeStudentId, accessKeyState.StudentId);
+                Assert.Equal(FakeLeb2UserId, accessKeyState.Leb2UserId);
+
+                if (!string.Equals(
+                        credentials.Username,
+                        accessKeyState.StudentId,
+                        StringComparison.Ordinal))
+                {
+                    throw new AccessKeyIdentityMismatchException();
+                }
+
+                return Task.FromResult<User?>(new User
+                {
+                    Id = FakeLeb2UserId,
+                    KmuttId = FakeStudentId
+                });
+            }
+        };
+        using var factory = CreateFactory(
+            new FakeActivityService(),
+            userService: userService);
+        using var client = CreateAuthenticatedClient(factory);
+
+        var response = await client.PostAsJsonAsync(
+            "/User/login",
+            new Credentials
+            {
+                Username = "other-student",
+                Password = "fake-password"
+            });
+        var error = await response.Content.ReadFromJsonAsync<ErrorResponse>();
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Equal(ApiErrorCodes.AccessKeyIdentityMismatch, error?.ResponseCode);
+        Assert.Equal(
+            "The access key cannot be used with this account.",
+            error?.Message);
+    }
+
+    [Fact]
+    public async Task Cookie_WithUnassignedAccessKeyIsRejectedBeforeSelenium()
+    {
+        var userService = new FakeUserService
+        {
+            CookieHandler = (_, _, _) =>
+                throw new InvalidOperationException("Cookie service should not run.")
+        };
+        using var factory = CreateFactory(
+            new FakeActivityService(),
+            accessKeyService: new FakeAccessKeyService(assigned: false),
+            userService: userService);
+        using var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Add(
+            AccessKeyAuthorizationFilter.HeaderName,
+            FakeAccessKeyId.ToString());
+
+        var response = await client.PostAsJsonAsync(
+            "/User/cookie",
+            new Credentials
+            {
+                Username = "fake-student",
+                Password = "fake-password"
+            });
+        var error = await response.Content.ReadFromJsonAsync<ErrorResponse>();
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Equal(ApiErrorCodes.AccessKeyNotActivated, error?.ResponseCode);
+    }
+
+    [Fact]
+    public async Task Cookie_WithAssignedAccessKeyRunsExistingCookieFlow()
+    {
+        var userService = new FakeUserService
+        {
+            CookieHandler = (credentials, _, _) =>
+            {
+                Assert.Equal("fake-student", credentials.Username);
+                return Task.FromResult<string?>("fake-cookie");
+            }
+        };
+        using var factory = CreateFactory(
+            new FakeActivityService(),
+            userService: userService);
+        using var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Add(
+            AccessKeyAuthorizationFilter.HeaderName,
+            FakeAccessKeyId.ToString());
+
+        var response = await client.PostAsJsonAsync(
+            "/User/cookie",
+            new Credentials
+            {
+                Username = "fake-student",
+                Password = "fake-password"
+            });
+        var body = await response.Content.ReadFromJsonAsync<JsonDocument>();
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("fake-cookie", body!.RootElement.GetProperty("cookie").GetString());
+    }
+
+    [Fact]
+    public async Task Cookie_PassesAccessKeyStateToUserServiceForIdentityCheck()
+    {
+        var userService = new FakeUserService
+        {
+            CookieHandler = (credentials, accessKeyState, _) =>
+            {
+                Assert.Equal(FakeStudentId, accessKeyState.StudentId);
+
+                if (!string.Equals(
+                        credentials.Username,
+                        accessKeyState.StudentId,
+                        StringComparison.Ordinal))
+                {
+                    throw new AccessKeyIdentityMismatchException();
+                }
+
+                return Task.FromResult<string?>("fake-cookie");
+            }
+        };
+        using var factory = CreateFactory(
+            new FakeActivityService(),
+            userService: userService);
+        using var client = CreateAuthenticatedClient(factory);
+
+        var response = await client.PostAsJsonAsync(
+            "/User/cookie",
+            new Credentials
+            {
+                Username = "other-student",
+                Password = "fake-password"
+            });
+        var error = await response.Content.ReadFromJsonAsync<ErrorResponse>();
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Equal(ApiErrorCodes.AccessKeyIdentityMismatch, error?.ResponseCode);
+    }
+
+    [Fact]
+    public async Task Cookie_WithLegacyNullLeb2IdentityIsRejectedBeforeCookieFlow()
+    {
+        var userService = new FakeUserService
+        {
+            CookieHandler = (_, accessKeyState, _) =>
+            {
+                if (!accessKeyState.Leb2UserId.HasValue)
+                {
+                    throw new AccessKeyReauthenticationRequiredException();
+                }
+
+                throw new InvalidOperationException("Cookie service should not run.");
+            }
+        };
+        using var factory = CreateFactory(
+            new FakeActivityService(),
+            accessKeyService: new FakeAccessKeyService(
+                assigned: true,
+                leb2UserId: null),
+            userService: userService);
+        using var client = CreateAuthenticatedClient(factory);
+
+        var response = await client.PostAsJsonAsync(
+            "/User/cookie",
+            new Credentials
+            {
+                Username = FakeStudentId,
+                Password = "fake-password"
+            });
+        var error = await response.Content.ReadFromJsonAsync<ErrorResponse>();
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Equal(
+            ApiErrorCodes.AccessKeyReauthenticationRequired,
+            error?.ResponseCode);
+    }
+
+    [Theory]
+    [InlineData("/Activity/10")]
+    [InlineData("/Activity/10/20")]
+    [InlineData("/Activity/10/snapshot")]
+    public async Task ActivityRoutes_RejectMismatchedLeb2UserBeforeActivityService(
+        string path)
+    {
+        var activityService = new FakeActivityService
+        {
+            ThrowOnInvocation = true
+        };
+        using var factory = CreateFactory(activityService);
+        using var client = CreateAuthenticatedClient(factory, userId: "124");
+
+        var response = await client.GetAsync(path);
+        var error = await response.Content.ReadFromJsonAsync<ErrorResponse>();
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Equal(ApiErrorCodes.AccessKeyIdentityMismatch, error?.ResponseCode);
+        Assert.Equal(0, activityService.InvocationCount);
+    }
+
+    [Theory]
+    [InlineData("/Activity/10")]
+    [InlineData("/Activity/10/20")]
+    [InlineData("/Activity/10/snapshot")]
+    public async Task ActivityRoutes_AcceptMatchingLeb2UserAndInvokeActivityService(
+        string path)
+    {
+        var activityService = new FakeActivityService();
+        using var factory = CreateFactory(activityService);
+        using var client = CreateAuthenticatedClient(factory);
+
+        var response = await client.GetAsync(path);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(1, activityService.InvocationCount);
+    }
+
+    [Theory]
+    [InlineData("/Activity/10")]
+    [InlineData("/Activity/10/20")]
+    [InlineData("/Activity/10/snapshot")]
+    public async Task ActivityRoutes_RequireReauthenticationForLegacyNullLeb2Identity(
+        string path)
+    {
+        var activityService = new FakeActivityService
+        {
+            ThrowOnInvocation = true
+        };
+        using var factory = CreateFactory(
+            activityService,
+            accessKeyService: new FakeAccessKeyService(
+                assigned: true,
+                leb2UserId: null));
+        using var client = CreateAuthenticatedClient(factory);
+
+        var response = await client.GetAsync(path);
+        var error = await response.Content.ReadFromJsonAsync<ErrorResponse>();
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Equal(
+            ApiErrorCodes.AccessKeyReauthenticationRequired,
+            error?.ResponseCode);
+        Assert.Equal(0, activityService.InvocationCount);
     }
 
     [Theory]
@@ -394,6 +775,58 @@ public class ApiIntegrationTests
         Assert.False(paths.TryGetProperty("/Activity", out _));
         Assert.False(paths.TryGetProperty("/Activity/all", out _));
         Assert.True(paths.GetProperty("/health/leb2").TryGetProperty("get", out _));
+
+        var classOperation = paths
+            .GetProperty("/Class/{id}")
+            .GetProperty("get");
+        Assert.DoesNotContain(
+            classOperation
+                .GetProperty("parameters")
+                .EnumerateArray(),
+            parameter => parameter.GetProperty("name").GetString() == UserIdHeaderName);
+    }
+
+    [Fact]
+    public async Task Swagger_AdvertisesSeparateAccessKeyAndLeb2Requirements()
+    {
+        using var factory = CreateFactory(new FakeActivityService());
+        using var client = factory.CreateClient();
+
+        using var swagger = await client.GetFromJsonAsync<JsonDocument>(
+            "/swagger/v1/swagger.json");
+        var root = swagger!.RootElement;
+        var paths = root.GetProperty("paths");
+        var loginSecurity = paths
+            .GetProperty("/User/login")
+            .GetProperty("post")
+            .GetProperty("security")[0];
+        var cookieSecurity = paths
+            .GetProperty("/User/cookie")
+            .GetProperty("post")
+            .GetProperty("security")[0];
+        var activitySecurity = paths
+            .GetProperty("/Activity/{semesterId}")
+            .GetProperty("get")
+            .GetProperty("security")[0];
+        var schemes = root
+            .GetProperty("components")
+            .GetProperty("securitySchemes");
+
+        Assert.True(loginSecurity.TryGetProperty("AccessKey", out _));
+        Assert.False(loginSecurity.TryGetProperty("Leb2Bearer", out _));
+        Assert.True(cookieSecurity.TryGetProperty("AccessKey", out _));
+        Assert.False(cookieSecurity.TryGetProperty("Leb2Bearer", out _));
+        Assert.True(activitySecurity.TryGetProperty("AccessKey", out _));
+        Assert.True(activitySecurity.TryGetProperty("Leb2Bearer", out _));
+        Assert.Equal(
+            "apiKey",
+            schemes.GetProperty("AccessKey").GetProperty("type").GetString());
+        Assert.Equal(
+            "access-key",
+            schemes.GetProperty("AccessKey").GetProperty("name").GetString());
+        Assert.Equal(
+            "header",
+            schemes.GetProperty("AccessKey").GetProperty("in").GetString());
     }
 
     private static void AssertActivityOperation(JsonElement operation)
@@ -410,6 +843,7 @@ public class ApiIntegrationTests
                 "200",
                 "400",
                 "401",
+                "403",
                 "429",
                 "500",
                 "502",
@@ -428,6 +862,9 @@ public class ApiIntegrationTests
         Assert.Equal(
             "integer",
             userIdHeader.GetProperty("schema").GetProperty("type").GetString());
+        Assert.Contains(
+            "Compatibility assertion",
+            userIdHeader.GetProperty("description").GetString());
 
         Assert.All(
             parameters
@@ -440,7 +877,9 @@ public class ApiIntegrationTests
 
     private static WebApplicationFactory<Program> CreateFactory(
         IActivityService activityService,
-        IOutboundRequestStatusReader? statusReader = null)
+        IOutboundRequestStatusReader? statusReader = null,
+        IAccessKeyService? accessKeyService = null,
+        IUserService? userService = null)
     {
         return new WebApplicationFactory<Program>()
             .WithWebHostBuilder(builder =>
@@ -448,9 +887,17 @@ public class ApiIntegrationTests
                 builder.UseEnvironment("Development");
                 builder.ConfigureTestServices(services =>
                 {
+                    var resolvedAccessKeyService =
+                        accessKeyService ?? new FakeAccessKeyService();
+
                     services.RemoveAll<IServiceManager>();
                     services.AddSingleton<IServiceManager>(
-                        new FakeServiceManager(activityService));
+                        new FakeServiceManager(
+                            activityService,
+                            resolvedAccessKeyService,
+                            userService));
+                    services.RemoveAll<IAccessKeyService>();
+                    services.AddSingleton<IAccessKeyService>(resolvedAccessKeyService);
 
                     if (statusReader is not null)
                     {
@@ -466,6 +913,9 @@ public class ApiIntegrationTests
         string? userId = "123")
     {
         var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Add(
+            AccessKeyAuthorizationFilter.HeaderName,
+            FakeAccessKeyId.ToString());
         client.DefaultRequestHeaders.Authorization =
             new AuthenticationHeaderValue("Bearer", "fake-session");
 
@@ -494,14 +944,21 @@ public class ApiIntegrationTests
 
     private sealed class FakeServiceManager : IServiceManager
     {
-        public FakeServiceManager(IActivityService activityService)
+        public FakeServiceManager(
+            IActivityService activityService,
+            IAccessKeyService accessKeyService,
+            IUserService? userService)
         {
             ActivityService = activityService;
+            AccessKeyService = accessKeyService;
+            UserService = userService ?? new UnsupportedUserService();
         }
 
         public IActivityService ActivityService { get; }
 
-        public IUserService UserService { get; } = new UnsupportedUserService();
+        public IAccessKeyService AccessKeyService { get; }
+
+        public IUserService UserService { get; }
 
         public IClassService ClassService { get; } = new UnsupportedClassService();
 
@@ -509,8 +966,129 @@ public class ApiIntegrationTests
             new UnsupportedSemesterService();
     }
 
+    private sealed class FakeAccessKeyService : IAccessKeyService
+    {
+        private readonly bool _assigned;
+        private readonly int? _leb2UserId;
+
+        public FakeAccessKeyService(
+            bool assigned = true,
+            int? leb2UserId = FakeLeb2UserId)
+        {
+            _assigned = assigned;
+            _leb2UserId = leb2UserId;
+        }
+
+        public Task<AccessKeyState> ValidateProvisionedKeyAsync(
+            Guid keyId,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(new AccessKeyState(
+                keyId,
+                _assigned
+                    ? FakeAssignedUserId
+                    : null,
+                _assigned ? FakeStudentId : null,
+                _assigned ? _leb2UserId : null));
+        }
+
+        public Task<AccessKeyState> ValidateActivatedKeyAsync(
+            Guid keyId,
+            CancellationToken cancellationToken = default)
+        {
+            if (!_assigned)
+            {
+                throw new AccessKeyNotActivatedException();
+            }
+
+            return ValidateProvisionedKeyAsync(keyId, cancellationToken);
+        }
+
+        public void EnsureStudentIdentity(
+            AccessKeyState state,
+            string studentId)
+        {
+            if (state.StudentId is not null
+                && !string.Equals(
+                    state.StudentId,
+                    studentId.Trim(),
+                    StringComparison.Ordinal))
+            {
+                throw new AccessKeyIdentityMismatchException();
+            }
+        }
+
+        public void EnsureLeb2IdentityInitialized(AccessKeyState state)
+        {
+            if (!state.IsAssigned || !state.Leb2UserId.HasValue)
+            {
+                throw new AccessKeyReauthenticationRequiredException();
+            }
+        }
+
+        public void EnsureLeb2UserIdentity(
+            AccessKeyState state,
+            int leb2UserId)
+        {
+            if (!state.Leb2UserId.HasValue)
+            {
+                throw new AccessKeyReauthenticationRequiredException();
+            }
+
+            if (state.Leb2UserId.Value != leb2UserId)
+            {
+                throw new AccessKeyIdentityMismatchException();
+            }
+        }
+
+        public Task RegisterSuccessfulLoginAsync(
+            Guid keyId,
+            string studentId,
+            int leb2UserId,
+            string name,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed class FakeUserService : IUserService
+    {
+        public Func<Credentials, AccessKeyState, CancellationToken, Task<User?>> LoginHandler { get; set; } =
+            (_, _, _) => Task.FromResult<User?>(new User
+            {
+                Id = 42,
+                KmuttId = "60000000",
+                NameEnglish = "Example",
+                SurnameEnglish = "Student"
+            });
+
+        public Func<Credentials, AccessKeyState, CancellationToken, Task<string?>> CookieHandler { get; set; } =
+            (_, _, _) => Task.FromResult<string?>("fake-cookie");
+
+        public Task<User?> GetUserByCredentialsAsync(
+            Credentials credentials,
+            AccessKeyState accessKeyState,
+            CancellationToken cancellationToken = default)
+        {
+            return LoginHandler(credentials, accessKeyState, cancellationToken);
+        }
+
+        public Task<string?> GetCookieAsync(
+            Credentials credentials,
+            AccessKeyState accessKeyState,
+            CancellationToken cancellationToken = default)
+        {
+            return CookieHandler(credentials, accessKeyState, cancellationToken);
+        }
+    }
+
     private sealed class FakeActivityService : IActivityService
     {
+        public bool ThrowOnInvocation { get; set; }
+
+        public int InvocationCount { get; private set; }
+
         public Func<
             int,
             int,
@@ -547,6 +1125,7 @@ public class ApiIntegrationTests
             string token,
             CancellationToken cancellationToken = default)
         {
+            RecordInvocation();
             return GetByClassHandler(
                 userId,
                 semesterId,
@@ -561,6 +1140,7 @@ public class ApiIntegrationTests
             string token,
             CancellationToken cancellationToken = default)
         {
+            RecordInvocation();
             return GetBySemesterHandler(
                 userId,
                 semesterId,
@@ -574,11 +1154,23 @@ public class ApiIntegrationTests
             string token,
             CancellationToken cancellationToken = default)
         {
+            RecordInvocation();
             return GetSnapshotHandler(
                 userId,
                 semesterId,
                 token,
                 cancellationToken);
+        }
+
+        private void RecordInvocation()
+        {
+            InvocationCount++;
+
+            if (ThrowOnInvocation)
+            {
+                throw new InvalidOperationException(
+                    "Activity service should not run.");
+            }
         }
     }
 
@@ -586,6 +1178,7 @@ public class ApiIntegrationTests
     {
         public Task<User?> GetUserByCredentialsAsync(
             Credentials credentials,
+            AccessKeyState accessKeyState,
             CancellationToken cancellationToken = default)
         {
             throw new NotSupportedException();
@@ -593,6 +1186,7 @@ public class ApiIntegrationTests
 
         public Task<string?> GetCookieAsync(
             Credentials credentials,
+            AccessKeyState accessKeyState,
             CancellationToken cancellationToken = default)
         {
             throw new NotSupportedException();

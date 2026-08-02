@@ -1,5 +1,94 @@
 # Authentication and scrape resilience
 
+## Application access key
+
+The API keeps access authorization, LEB2 authentication, and LEB2 session state
+separate:
+
+```text
+access-key            -> selects one authorized local student
+LEB2 credentials      -> authenticate that student during login or cookie acquisition
+LEB2 session cookie   -> authenticates later outbound requests against LEB2
+X-LEB2-USER-ID        -> legacy client assertion checked against the stored LEB2 ID
+```
+
+The `access-key` header contains an existing `keys.id` UUID from the owner's
+Supabase PostgreSQL database:
+
+```http
+access-key: <provisioned-uuid>
+```
+
+The backend does not generate keys, hash them, expose key-management routes, or
+automatically reassign them. An activated key is bound to exactly one local student:
+
+```text
+keys.id
+  |
+user_keys
+  |
+users.student_id       normalized LEB2 login identifier
+users.leb2_user_id     authoritative LEB2 User.Id
+```
+
+That binding prevents the key from logging in as another student, obtaining a LEB2
+session for another student, or requesting activities with another LEB2 user ID.
+The application checks the database at the access-key authorization stage on every
+request, so deleting a key or its `user_keys` row takes effect without cache delay.
+Database failures fail closed and return `ACCESS_KEY_STORE_UNAVAILABLE` for
+transient failures.
+
+Key states:
+
+- A missing key is rejected everywhere.
+- A provisioned but unassigned key is accepted only by `/User/login`.
+- An assigned key is required by `/User/cookie` and all data routes.
+
+First-use flow:
+
+1. The owner inserts a UUID into `keys` directly in Supabase.
+2. The user receives that UUID out of band.
+3. The client calls `/User/login` with `access-key` and LEB2 credentials.
+4. After successful LEB2 authentication, the backend upserts `users` by normalized login identifier, stores the authoritative `User.Id` in `users.leb2_user_id`, and claims the key in one PostgreSQL transaction.
+5. The client calls `/User/cookie` with the assigned key.
+6. Normal data requests send both `access-key` and the opaque LEB2 session cookie.
+
+`users.student_id` is the normalized `/User/login` username. `users.leb2_user_id`
+comes only from the successful LEB2 `/User/login` response; the client-supplied
+`X-LEB2-USER-ID` is never persisted. Existing users with a null numeric identity
+populate it on their next successful `/User/login`; activity requests fail closed
+until then with `ACCESS_KEY_REAUTHENTICATION_REQUIRED`.
+
+`users.name` uses the
+successful LEB2 English name when available, with the existing Thai fields as a
+fallback. Audit fields use `leb2scrapper-api`.
+
+Deleting a `user_keys` row makes the key unassigned again. Deleting a `keys` row
+invalidates it and cascades its assignment under the supplied schema. The backend
+never moves a key from one user to another.
+
+## Supabase connection
+
+The backend uses direct Npgsql access through `ConnectionStrings:Supabase` in every
+environment. It never creates tables or runs migrations. Keep the local connection
+string in user secrets and the production value in Secret Manager; never commit
+either value. The existing `users` table must include nullable `leb2_user_id` and
+its unique non-null index before deploying this version. If the column is missing,
+access-key persistence fails closed through the existing database error contract;
+the application does not attempt to repair the schema.
+
+Before merging, manually apply and verify this prerequisite in Supabase. Merge
+deploys Cloud Run, so the schema must be ready first:
+
+```sql
+ALTER TABLE users
+ADD COLUMN leb2_user_id INTEGER;
+
+CREATE UNIQUE INDEX uq_users_leb2_user_id
+ON users (leb2_user_id)
+WHERE leb2_user_id IS NOT NULL;
+```
+
 ## Request authentication
 
 The backend does not store LEB2 credentials or session cookies. Authenticated data
@@ -21,7 +110,7 @@ accepted directly in `Authorization` without the `Bearer` prefix. New clients sh
 use the Bearer form; the legacy form can be removed in a future version after clients
 have migrated.
 
-The following routes require this header:
+The following routes require this header in addition to an assigned `access-key`:
 
 - `GET /Semester`
 - `GET /Class/{id}`
@@ -35,9 +124,16 @@ All activity routes also require a positive integer user ID in:
 X-LEB2-USER-ID: <user-id>
 ```
 
-`POST /User/login` and `POST /User/cookie` remain credential-acquisition routes. Their
-request credentials are used only for the outbound call in that request and are not
-persisted.
+`X-LEB2-USER-ID` remains for compatibility, but it is only a client-supplied
+assertion. It must equal `users.leb2_user_id` for the activated access-key. The
+opaque `Authorization` value remains a separate LEB2 session credential and is not
+parsed to derive identity.
+
+`POST /User/login` requires only a provisioned access key because it performs the
+enrollment transaction. `POST /User/cookie` requires an assigned key with an
+initialized `users.leb2_user_id`; legacy assigned users must complete one successful
+`/User/login` first. It does not change local registration. LEB2 credentials are used
+only for the outbound call in that request and are not persisted.
 
 ## Error contract
 
@@ -47,8 +143,15 @@ or scraper failures.
 | HTTP status | `responseCode` | Meaning |
 | --- | --- | --- |
 | `400` | `INVALID_REQUEST` | Request input failed validation. |
+| `401` | `ACCESS_KEY_REQUIRED` | The `access-key` header is absent. |
+| `401` | `ACCESS_KEY_INVALID` | The access key is malformed or not provisioned. |
 | `401` | `AUTHENTICATION_REQUIRED` | Bearer header is absent or malformed. |
 | `401` | `SESSION_EXPIRED` | LEB2 rejected or redirected the supplied session. Discard the client-held cookie and reauthenticate. |
+| `403` | `ACCESS_KEY_NOT_ACTIVATED` | The key has not been claimed through `/User/login`. |
+| `403` | `ACCESS_KEY_ALREADY_ASSIGNED` | The key is assigned to another account. |
+| `403` | `ACCESS_KEY_IDENTITY_MISMATCH` | The key cannot be used with the submitted student or LEB2 user ID. |
+| `403` | `ACCESS_KEY_REAUTHENTICATION_REQUIRED` | The local user needs one successful `/User/login` to initialize its LEB2 identity. |
+| `409` | `ACCESS_KEY_IDENTITY_CONFLICT` | Successful LEB2 authentication conflicts with an established local identity. |
 | `404` | `RESOURCE_NOT_FOUND` | The requested resource or class/semester relationship was not found. |
 | `408` | `LEB2_UNAVAILABLE` | The request timed out. |
 | `429` | `CLIENT_THROTTLE_ACTIVE` | This client already has the maximum number of active and queued LEB2 operations. The response includes `Retry-After: 1`. |
@@ -57,6 +160,7 @@ or scraper failures.
 | `502` | `SCRAPE_RESPONSE_CHANGED` | LEB2 responded, but its HTML or JSON shape no longer matches the scraper. |
 | `503` | `LEB2_UNAVAILABLE` | A transient LEB2 network, timeout, rate-limit, or server failure occurred. |
 | `503` | `REQUEST_BACKOFF_ACTIVE` | A recent failure has temporarily paused this endpoint. The response includes `Retry-After`. |
+| `503` | `ACCESS_KEY_STORE_UNAVAILABLE` | Supabase access-key validation is temporarily unavailable. |
 
 As verified on 2026-07-24, an absent or invalid LEB2 session redirects both the class
 page and activity API to `https://www.leb2.org/` with HTTP 302. The direct HTTP adapter
@@ -110,8 +214,8 @@ ID-ordered class list containing each class name and activities. Classes with no
 activities remain in the successful response, and LEB2's ordering is preserved
 inside each class.
 
-All routes require integer route values, `Authorization: Bearer
-<session-cookie-value>`, and
+All activity routes require an assigned `access-key`, integer route values,
+`Authorization: Bearer <session-cookie-value>`, and
 `X-LEB2-USER-ID`. The aggregate request is intentionally fail-fast. If class
 discovery or any activity request fails, remaining queued work is canceled and the
 request returns the existing error contract. It never returns a successful partial
@@ -180,7 +284,8 @@ limit of four is application-wide only because production currently has one acti
 instance. Cloud Run request concurrency and outbound LEB2 concurrency are separate
 limits.
 
-The application has no persistent user or session database. Horizontal scaling
+The application has no persistent LEB2 user-session database. Supabase stores only
+the local access-key enrollment data described above. Horizontal scaling still
 requires distributed replacements for throttling, backoff, and caches, plus
 distributed incident correlation and, if health is aggregated, distributed health
 state. Otherwise each instance would have independent local state.

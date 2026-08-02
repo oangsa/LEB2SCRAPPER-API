@@ -5,4 +5,5 @@ public interface IRepositoryManager
     IScrapingRepository ScrapingRepository { get; }
     IActivityRepository ActivityRepository { get; }
     IUserRepository UserRepository { get; }
+    IAccessKeyRepository AccessKeyRepository { get; }
 }

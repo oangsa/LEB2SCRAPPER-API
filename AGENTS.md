@@ -15,7 +15,11 @@ The project is not officially affiliated with KMUTT or the LEB2 system.
 
 The solution uses a layered architecture with separate projects for HTTP presentation, application services, contracts, repositories, infrastructure, and shared entities. Keep policy and orchestration in services, HTTP concerns in controllers, and external-system details in repositories and infrastructure.
 
-There is currently no local database, ORM, migration system, or persistence schema in this repository. Repository classes are adapters for LEB2 HTTP endpoints and browser scraping.
+There is no local database, ORM, migration system, or automatic schema management in
+this repository. The access-key feature uses the owner's existing Supabase
+PostgreSQL database through a focused Npgsql repository; its `users`, `keys`, and
+`user_keys` tables are managed outside the application. Other repository classes are
+adapters for LEB2 HTTP endpoints and browser scraping.
 
 ### Runtime and entrypoint
 
@@ -23,9 +27,13 @@ Application startup begins in `LEB2SCRAPPER/Program.cs`:
 
 1. ASP.NET Core creates the application builder.
 2. Controllers from `LEB2SCRAPPER.Presentation` are registered through an application part.
-3. `ICoreAdapterManager`, `IServiceManager`, and `IRepositoryManager` are registered as scoped dependencies.
-4. OpenAPI, Swagger, permissive CORS, and the global exception middleware are configured.
-5. Controller routes are mapped and the application starts.
+3. `ICoreAdapterManager`, `IServiceManager`, `IRepositoryManager`, the access-key
+   repository/service, and request context are registered as scoped dependencies.
+4. Every environment uses a syntactically valid `ConnectionStrings:Supabase` value
+   for the existing Supabase PostgreSQL database; Production fails clearly when it
+   is missing. No tables or migrations are created.
+5. OpenAPI, Swagger, permissive CORS, and the global exception middleware are configured.
+6. Controller routes are mapped and the application starts.
 
 Swagger UI is exposed in the Development environment at:
 
@@ -45,7 +53,8 @@ are process-local. The outbound gate's `MaxConcurrentRequests = 4` is therefore 
 application-wide production limit only while this single-instance deployment model
 remains in place. Horizontal scaling requires distributed replacements for
 throttling, backoff, caches, incident correlation, and optionally health
-aggregation. The application has no persistent user or session database.
+aggregation. Supabase stores access-key enrollment records, but the application has
+no persistent LEB2 session database.
 
 ---
 
@@ -62,15 +71,15 @@ The main request flow is:
 - `LEB2SCRAPPER.Presentation`
   - Controllers, action filters, HTTP validation, routes, and response metadata.
 - `LEB2SCRAPPER.Service.Contracts`
-  - Service interfaces and the `IServiceManager` contract.
+  - Service interfaces, including access-key policy, and the `IServiceManager` contract.
 - `LEB2SCRAPPER.Service`
   - Use-case orchestration, service implementations, `ServiceManager`, and `CoreAdapterManager`.
 - `LEB2SCRAPPER.Contracts`
   - Repository interfaces and the `IRepositoryManager` contract.
 - `LEB2SCRAPPER.Repository`
-  - Concrete outbound adapters for LEB2 API calls and Selenium scraping.
+  - Concrete outbound adapters for LEB2 API calls, Selenium scraping, and Supabase access-key persistence.
 - `LEB2SCRAPPER.Infrastructure.Contracts`
-  - Technical contracts such as `IHttpService`.
+  - Technical contracts such as `IHttpService` and the scoped access-key request context.
 - `LEB2SCRAPPER.Infrastructure`
   - Shared technical implementations, especially HTTP transport and JSON conversion.
 - `LEB2SCRAPPER.Entity`
@@ -142,6 +151,7 @@ Contains:
 - `Master/IClassService.cs`
 - `Master/ISemesterService.cs`
 - `Master/IUserService.cs`
+- `Master/IAccessKeyService.cs`
 
 New service capabilities should be added to the relevant interface. A new service should also be exposed through `IServiceManager`.
 
@@ -179,6 +189,7 @@ Contains:
 - `Repository/IActivityRepository.cs`
 - `Repository/IScrapingRepository.cs`
 - `Repository/IUserRepository.cs`
+- `Repository/IAccessKeyRepository.cs`
 - `Repository/Core/IRepositoryManager.cs`
 
 Contracts should describe the data operation needed by the application without exposing Selenium-specific or ASP.NET-specific types.
@@ -196,6 +207,7 @@ Contains:
 - `Master/ActivityRepository.cs`
 - `Master/ScrapingRepository.cs`
 - `Master/UserRepository.cs`
+- `Master/AccessKeyRepository.cs`
 - `Core/RepositoryManager.cs`
 
 `RepositoryManager` lazily creates repository implementations.
@@ -249,7 +261,10 @@ Entities must remain free of ASP.NET controller behavior, Selenium behavior, and
 - Chrome or Chromium compatible with the configured Selenium driver
 - Network access to the LEB2 sign-in, application, and public API endpoints
 
-No custom application environment variables are currently required.
+The application configuration key `ConnectionStrings:Supabase` is required in
+Production. ASP.NET Core maps it from the environment variable
+`ConnectionStrings__Supabase`. Development can use the host project's user-secrets
+store with the same key.
 
 Useful ASP.NET Core environment variables include:
 
@@ -257,8 +272,21 @@ Useful ASP.NET Core environment variables include:
   - Use `Development` to enable Swagger.
 - `ASPNETCORE_URLS`
   - Overrides the listening URLs when needed.
+- `ConnectionStrings__Supabase`
+  - Production PostgreSQL connection string for the existing Supabase database.
+    Never commit it.
 
 Never commit credentials, LEB2 cookies, access tokens, or other secrets to source control or configuration files.
+
+Initialize local user secrets once, then set the connection string without committing
+it:
+
+```bash
+dotnet user-secrets set \
+  "ConnectionStrings:Supabase" \
+  "Host=<supabase-host>;Port=5432;Database=postgres;Username=<supabase-user>;Password=<password>;SSL Mode=Require;Trust Server Certificate=true" \
+  --project LEB2SCRAPPER/LEB2SCRAPPER.csproj
+```
 
 ### Restore and build
 
@@ -292,24 +320,33 @@ The default container runs as Production, so its Swagger UI is not enabled unles
 ### Current routes
 
 - `POST /User/login`
-  - Accepts LEB2 credentials and returns the mapped user profile.
+  - Requires a provisioned `access-key`, accepts LEB2 credentials, upserts the local
+    student, claims an unassigned key, and returns the mapped user profile.
 - `POST /User/cookie`
-  - Accepts LEB2 credentials and returns a scraped LEB2 session cookie.
+  - Requires an assigned `access-key` with an initialized `leb2_user_id`, accepts
+    matching LEB2 credentials, and returns a scraped LEB2 session cookie. Legacy
+    assigned users must complete `/User/login` once after the schema change. It
+    does not assign keys.
 - `GET /Semester`
-  - Requires the LEB2 session value in the `Authorization` header.
+  - Requires an assigned `access-key` and the LEB2 session value in `Authorization`.
 - `GET /Class/{id}`
-  - Requires the LEB2 session value in the `Authorization` header.
+  - Requires an assigned `access-key` and the LEB2 session value in `Authorization`.
   - `id` is the semester ID.
 - `GET /Activity/{semesterId}/{classId}`
   - Returns activities for one class.
   - Verifies that `classId` belongs to `semesterId`; otherwise returns the normal
     `404 RESOURCE_NOT_FOUND` contract.
-  - Requires a positive user ID in the `X-LEB2-USER-ID` header.
+  - Requires `X-LEB2-USER-ID` to match the owner's stored `leb2_user_id`.
+  - Requires an assigned `access-key`.
   - Requires the LEB2 session value as a bearer credential in the `Authorization` header.
 - `GET /Activity/{semesterId}`
   - Returns activities for every class in one semester.
-  - Requires a positive user ID in the `X-LEB2-USER-ID` header.
+  - Requires `X-LEB2-USER-ID` to match the owner's stored `leb2_user_id`.
+  - Requires an assigned `access-key`.
   - Requires the LEB2 session value as a bearer credential in the `Authorization` header.
+- `GET /Activity/{semesterId}/snapshot`
+  - Requires an assigned `access-key`, a stored `leb2_user_id`, and a matching
+    `X-LEB2-USER-ID` assertion with the LEB2 session value in `Authorization`.
 - `GET /health/leb2`
   - Returns `200 OK` with `Cache-Control: no-store`.
   - Reports process-local observed request-gate/backoff state; it does not contact
@@ -319,13 +356,17 @@ The current `Authorization` header is passed through as an LEB2 session/cookie v
 
 ### Typical API flow
 
-1. Call `POST /User/login` when user profile data is needed.
-2. Call `POST /User/cookie` to obtain an LEB2 session cookie.
-3. Treat the returned cookie as a secret.
-4. Send that value in the `Authorization` header when requesting semesters.
-5. Use a semester ID to request classes.
-6. Send the user ID in `X-LEB2-USER-ID` and use the semester ID, plus an
-   optional class ID, to request activities.
+1. Manually insert a UUID into `keys` in Supabase and give it to the user out of band.
+2. Call `POST /User/login` with that `access-key` and valid LEB2 credentials. The
+   successful LEB2 `User.Id` becomes `users.leb2_user_id`.
+3. The successful login upserts `users` by trimmed username and claims the key in
+   `user_keys`; invalid LEB2 credentials do not create either record.
+4. Call `POST /User/cookie` with the assigned `access-key` to obtain an LEB2 session cookie.
+5. Treat the returned cookie as a secret and send it with the `access-key` in data requests.
+6. Use a semester ID to request classes.
+7. Send the server-bound numeric ID in `X-LEB2-USER-ID` and use the semester ID,
+   plus an optional class ID, to request activities. The header is a compatibility
+   assertion, not an identity source.
 
 External LEB2 HTML, selectors, payloads, and response shapes can change independently of this repository. When an integration fails, inspect the current external contract before changing local models or scraping logic.
 
@@ -351,14 +392,15 @@ Some existing project references are broader than this ideal. Do not use those b
 
 Class activity request (`GET /Activity/{semesterId}/{classId}`):
 
-1. `ActivityController` validates the route IDs, `X-LEB2-USER-ID`, and the
-   `Authorization` header.
-2. The controller calls `IServiceManager.ActivityService`.
-3. `ActivityService` delegates through `IRepositoryManager.ActivityRepository`.
-4. `ActivityRepository` calls the LEB2 activities endpoint through `IHttpService`.
-5. `HttpService` applies the shared JSON converters and deserializes the response.
-6. The result travels back through the service to the controller.
-7. The controller returns the HTTP response.
+1. `AccessKeyAuthorizationFilter` validates the `access-key` against Supabase and
+   stores request-scoped key context.
+2. `ActivityController` validates route IDs, `X-LEB2-USER-ID`, and the `Authorization` header.
+3. The controller calls `IServiceManager.ActivityService`.
+4. `ActivityService` delegates through `IRepositoryManager.ActivityRepository`.
+5. `ActivityRepository` calls the LEB2 activities endpoint through `IHttpService`.
+6. `HttpService` applies the shared JSON converters and deserializes the response.
+7. The result travels back through the service to the controller.
+8. The controller returns the HTTP response.
 
 ### Why these boundaries matter
 
@@ -487,9 +529,15 @@ else
 
 8. For every new route, add appropriate routing, input validation, and `ProducesResponseType` metadata. Verify that the generated Swagger document reflects the new endpoint. There is no committed `openapi.yaml`; do not create one unless the user requests a committed API specification.
 
-9. Do not introduce a database, ORM, schema, or migrations unless the user explicitly requests persistence and provides the required data model. This repository currently has no database layer.
+9. This feature is the explicit exception to the repository's former no-database rule:
+   use only the provided Supabase PostgreSQL schema through focused parameterized
+   Npgsql operations. Do not add migrations, automatic table creation, an ORM, a
+   generic repository, or a second database.
 
-10. Never log, commit, echo, or include real usernames, passwords, LEB2 cookies, authorization values, or session data in tests, fixtures, examples, error responses, or documentation. Use clearly fake placeholders.
+10. Never log, commit, echo, or include real usernames, passwords, LEB2 cookies,
+    access keys, authorization values, database connection strings, or session data
+    in tests, fixtures, examples, error responses, or documentation. Use clearly fake
+    placeholders.
 
 11. Keep external integration details descriptive and maintainable. Use clear response-property and mapping names rather than short aliases. Centralize new URLs and repeated headers within the owning repository or infrastructure component.
 
