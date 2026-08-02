@@ -80,7 +80,7 @@ variables are appropriate.
 The application expects the PostgreSQL connection string in every environment as:
 
 ```text
-ConnectionStrings__Supabase
+ConnectionStrings__Production
 ```
 
 The workflow maps this setting to Secret Manager secret
@@ -186,7 +186,7 @@ export. The runtime account does not need broad project roles, but it does need 
 Secret Manager accessor role shown below.
 
 Create the Secret Manager secret and add the connection string from a protected local
-file. The file must contain only the value for `ConnectionStrings:Supabase`; never
+file. The file must contain only the value for `ConnectionStrings:Production`; never
 commit it:
 
 ```bash
