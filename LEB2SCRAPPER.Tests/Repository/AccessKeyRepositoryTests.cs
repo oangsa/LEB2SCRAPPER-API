@@ -485,12 +485,19 @@ public sealed class AccessKeyRepositoryTests : IClassFixture<AccessKeyDatabaseFi
 
 public sealed class AccessKeyDatabaseFixture : IAsyncLifetime
 {
-    private readonly PostgreSqlContainer _container = new PostgreSqlBuilder()
-        .WithImage("postgres:16-alpine")
-        .WithDatabase("access_key_tests")
-        .WithUsername("postgres")
-        .WithPassword("postgres")
-        .Build();
+    private readonly string _password = Guid.NewGuid().ToString("N");
+    private readonly PostgreSqlContainer _container;
+
+    public AccessKeyDatabaseFixture()
+    {
+        _container = new PostgreSqlBuilder()
+            .WithImage("postgres:16-alpine")
+            .WithDatabase("access_key_tests")
+            .WithUsername("postgres")
+            .WithPassword(_password)
+            .Build();
+    }
+
     public string ConnectionString => _container.GetConnectionString();
 
     public async Task InitializeAsync()
@@ -542,7 +549,7 @@ public sealed class AccessKeyDatabaseFixture : IAsyncLifetime
                 updated_at timestamptz NOT NULL
             );
 
-            CREATE UNIQUE INDEX users_leb2_user_id_unique
+            CREATE UNIQUE INDEX uq_users_leb2_user_id
                 ON users (leb2_user_id)
                 WHERE leb2_user_id IS NOT NULL;
 
@@ -553,14 +560,22 @@ public sealed class AccessKeyDatabaseFixture : IAsyncLifetime
             );
 
             CREATE TABLE user_keys (
-                user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-                key_id uuid NOT NULL REFERENCES keys(id) ON DELETE CASCADE,
+                user_id uuid NOT NULL,
+                key_id uuid NOT NULL,
                 created_by text NOT NULL,
                 updated_by text NOT NULL,
                 created_at timestamptz NOT NULL,
                 updated_at timestamptz NOT NULL,
-                CONSTRAINT user_keys_user_id_key_id_unique UNIQUE (user_id, key_id),
-                CONSTRAINT user_keys_key_id_unique UNIQUE (key_id)
+                CONSTRAINT pk_user_keys PRIMARY KEY (user_id, key_id),
+                CONSTRAINT fk_user_keys_user_id
+                    FOREIGN KEY (user_id)
+                    REFERENCES users(id)
+                    ON DELETE CASCADE,
+                CONSTRAINT fk_user_keys_key_id
+                    FOREIGN KEY (key_id)
+                    REFERENCES keys(id)
+                    ON DELETE CASCADE,
+                CONSTRAINT uq_user_keys_key UNIQUE (key_id)
             );
 
             CREATE OR REPLACE FUNCTION force_claim_conflict()

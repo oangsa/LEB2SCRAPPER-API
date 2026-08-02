@@ -8,6 +8,8 @@ namespace LEB2SCRAPPER.Repository.Master;
 public sealed class AccessKeyRepository : IAccessKeyRepository
 {
     private const string AuditActor = "leb2scrapper-api";
+    private const string UserKeyUniqueConstraint = "uq_user_keys_key";
+    private const string Leb2UserIdUniqueConstraint = "uq_users_leb2_user_id";
 
     private const string AccessKeyStateSql = """
         SELECT u.id, u.student_id, u.leb2_user_id
@@ -455,32 +457,42 @@ public sealed class AccessKeyRepository : IAccessKeyRepository
 
     private static bool IsUserKeyAssignmentConflict(PostgresException exception)
     {
+        if (string.Equals(
+                exception.ConstraintName,
+                UserKeyUniqueConstraint,
+                StringComparison.Ordinal))
+        {
+            return true;
+        }
+
         return string.Equals(
                 exception.TableName,
                 "user_keys",
                 StringComparison.Ordinal)
-            && (string.Equals(
-                    exception.ColumnName,
-                    "key_id",
-                    StringComparison.Ordinal)
-                || exception.ConstraintName?.Contains(
-                    "key_id",
-                    StringComparison.OrdinalIgnoreCase) == true);
+            && string.Equals(
+                exception.ColumnName,
+                "key_id",
+                StringComparison.Ordinal);
     }
 
     private static bool IsLeb2UserIdentityConflict(PostgresException exception)
     {
+        if (string.Equals(
+                exception.ConstraintName,
+                Leb2UserIdUniqueConstraint,
+                StringComparison.Ordinal))
+        {
+            return true;
+        }
+
         return string.Equals(
                 exception.TableName,
                 "users",
                 StringComparison.Ordinal)
-            && (string.Equals(
-                    exception.ColumnName,
-                    "leb2_user_id",
-                    StringComparison.Ordinal)
-                || exception.ConstraintName?.Contains(
-                    "leb2_user_id",
-                    StringComparison.OrdinalIgnoreCase) == true);
+            && string.Equals(
+                exception.ColumnName,
+                "leb2_user_id",
+                StringComparison.Ordinal);
     }
 
     internal static AccessKeyDatabaseException CreateDatabaseException(

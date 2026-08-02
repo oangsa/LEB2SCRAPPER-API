@@ -77,6 +77,18 @@ its unique non-null index before deploying this version. If the column is missin
 access-key persistence fails closed through the existing database error contract;
 the application does not attempt to repair the schema.
 
+Before merging, manually apply and verify this prerequisite in Supabase. Merge
+deploys Cloud Run, so the schema must be ready first:
+
+```sql
+ALTER TABLE users
+ADD COLUMN leb2_user_id INTEGER;
+
+CREATE UNIQUE INDEX uq_users_leb2_user_id
+ON users (leb2_user_id)
+WHERE leb2_user_id IS NOT NULL;
+```
+
 ## Request authentication
 
 The backend does not store LEB2 credentials or session cookies. Authenticated data
