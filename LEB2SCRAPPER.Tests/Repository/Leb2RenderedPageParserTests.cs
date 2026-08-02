@@ -1,4 +1,5 @@
 using LEB2SCRAPPER.Entity.Exceptions.Leb2Integration;
+using LEB2SCRAPPER.Entity.Models.Semester;
 using LEB2SCRAPPER.Repository.Parsing;
 
 namespace LEB2SCRAPPER.Tests.Repository;
@@ -6,22 +7,87 @@ namespace LEB2SCRAPPER.Tests.Repository;
 public class Leb2RenderedPageParserTests
 {
     [Fact]
-    public void ParseSemesterIds_DeduplicatesRenderedLinks()
+    public void ParseSemesters_MapsAbsoluteHrefAndVisibleName()
     {
         var parser = new Leb2RenderedPageParser();
         const string html = """
             <html>
               <body>
-                <a href="/class?semester_id=10">First</a>
-                <a href="/class?semester_id=11">Second</a>
-                <a href="/class?semester_id=10">Duplicate</a>
+                <a href="https://app.leb2.org/class?other_semester_id=99&amp;semester_id=46&amp;tab=all">
+                  1/2026
+                </a>
               </body>
             </html>
             """;
 
-        var semesterIds = parser.ParseSemesterIds(html);
+        var semester = Assert.Single(parser.ParseSemesters(html));
 
-        Assert.Equal([10, 11], semesterIds);
+        Assert.Equal(46, semester.Id);
+        Assert.Equal("1/2026", semester.Name);
+    }
+
+    [Fact]
+    public void ParseSemesters_NormalizesRelativeLinkTextAndPreservesOrder()
+    {
+        var parser = new Leb2RenderedPageParser();
+        const string html = """
+            <a href="/class?tab=all&amp;semester_id=10">  2/2026  </a>
+            <a href="/class?semester_id=11">3/2026</a>
+            <a href="/class?semester_id=10">  2/2026 </a>
+            """;
+
+        var semesters = parser.ParseSemesters(html);
+
+        Assert.Equal([10, 11], semesters.Select(semester => semester.Id));
+        Assert.Equal(["2/2026", "3/2026"], semesters.Select(semester => semester.Name));
+    }
+
+    [Fact]
+    public void ParseSemesters_ConflictingDuplicateNamesFailStructurally()
+    {
+        var parser = new Leb2RenderedPageParser();
+        const string html = """
+            <a href="/class?semester_id=10">2/2026</a>
+            <a href="/class?semester_id=10">3/2026</a>
+            """;
+
+        var exception = Assert.Throws<StructuralParseException>(
+            () => parser.ParseSemesters(html));
+
+        Assert.Equal("semesters.semester_link_conflict", exception.FailureShape);
+    }
+
+    [Fact]
+    public void ParseSemesters_WithOnlyMalformedCandidatesFailsWithoutInvalidOutput()
+    {
+        var parser = new Leb2RenderedPageParser();
+        const string html = """
+            <a href="/class?semester_id=">Missing</a>
+            <a href="/class?semester_id=abc">Not numeric</a>
+            <a href="/class?semester_id=0">Zero</a>
+            <a href="/class?semester_id=12">   </a>
+            <a href="/class?other_semester_id=13">Other parameter</a>
+            """;
+
+        var exception = Assert.Throws<StructuralParseException>(
+            () => parser.ParseSemesters(html));
+
+        Assert.Equal("semesters.semester_link_values", exception.FailureShape);
+    }
+
+    [Fact]
+    public void ParseSemesters_IgnoresFragmentAndNestedQuerySemesterIds()
+    {
+        var parser = new Leb2RenderedPageParser();
+        const string html = """
+            <a href="/class#?semester_id=46">Fragment candidate</a>
+            <a href="/class?redirect=/other?semester_id=47">Nested query candidate</a>
+            """;
+
+        var exception = Assert.Throws<StructuralParseException>(
+            () => parser.ParseSemesters(html));
+
+        Assert.Equal("semesters.semester_links", exception.FailureShape);
     }
 
     [Fact]

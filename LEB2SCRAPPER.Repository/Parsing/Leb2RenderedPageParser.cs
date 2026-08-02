@@ -3,6 +3,7 @@ using AngleSharp.Dom;
 using AngleSharp.Html.Parser;
 using LEB2SCRAPPER.Entity.Exceptions.Leb2Integration;
 using LEB2SCRAPPER.Entity.Models.Class;
+using LEB2SCRAPPER.Entity.Models.Semester;
 
 namespace LEB2SCRAPPER.Repository.Parsing;
 
@@ -10,10 +11,10 @@ internal sealed class Leb2RenderedPageParser
 {
     private readonly HtmlParser _htmlParser = new();
 
-    public List<int> ParseSemesterIds(string pageSource)
+    public List<SemesterInfo> ParseSemesters(string pageSource)
     {
         var document = _htmlParser.ParseDocument(pageSource);
-        var semesterLinks = document.QuerySelectorAll("a[href*='semester_id=']");
+        var semesterLinks = document.QuerySelectorAll("a[href]");
 
         if (semesterLinks.Length == 0)
         {
@@ -22,26 +23,140 @@ internal sealed class Leb2RenderedPageParser
                 "The semester links no longer match the expected structure.");
         }
 
-        var semesterIds = semesterLinks
-            .Select(link => link.GetAttribute("href"))
-            .Where(href => !string.IsNullOrEmpty(href))
-            .Select(href => Regex.Match(href!, @"semester_id=(\d+)"))
-            .Where(match => match.Success)
-            .Select(match => int.TryParse(match.Groups[1].Value, out var semesterId)
-                ? semesterId
-                : 0)
-            .Where(semesterId => semesterId > 0)
-            .Distinct()
-            .ToList();
+        var semesters = new List<SemesterInfo>();
+        var semesterNamesById = new Dictionary<int, string>();
+        var candidateCount = 0;
 
-        if (semesterIds.Count == 0)
+        foreach (var link in semesterLinks)
+        {
+            var href = link.GetAttribute("href");
+            if (string.IsNullOrWhiteSpace(href))
+            {
+                continue;
+            }
+
+            if (!TryGetSemesterId(href, out var parsedIdCandidate))
+            {
+                continue;
+            }
+
+            candidateCount++;
+            var name = Regex.Replace(
+                    link.TextContent,
+                    @"\s+",
+                    " ",
+                    RegexOptions.CultureInvariant)
+                .Trim();
+
+            if (!parsedIdCandidate.HasValue
+                || string.IsNullOrWhiteSpace(name))
+            {
+                continue;
+            }
+
+            var parsedId = parsedIdCandidate.Value;
+
+            if (semesterNamesById.TryGetValue(parsedId, out var existingName))
+            {
+                if (!string.Equals(existingName, name, StringComparison.Ordinal))
+                {
+                    throw new StructuralParseException(
+                        "semesters.semester_link_conflict",
+                        "LEB2 returned conflicting names for the same semester ID.");
+                }
+
+                continue;
+            }
+
+            semesterNamesById[parsedId] = name;
+            semesters.Add(new SemesterInfo
+            {
+                Id = parsedId,
+                Name = name
+            });
+        }
+
+        if (candidateCount == 0)
+        {
+            throw new StructuralParseException(
+                "semesters.semester_links",
+                "The semester links no longer match the expected structure.");
+        }
+
+        if (semesters.Count == 0)
         {
             throw new StructuralParseException(
                 "semesters.semester_link_values",
                 "The semester links did not contain recognizable IDs.");
         }
 
-        return semesterIds;
+        return semesters;
+    }
+
+    private static bool TryGetSemesterId(string href, out int? parsedId)
+    {
+        parsedId = null;
+
+        var fragmentIndex = href.IndexOf('#');
+        var queryEnd = fragmentIndex >= 0 ? fragmentIndex : href.Length;
+        var queryStart = href.IndexOf('?');
+        if (queryStart < 0 || queryStart >= queryEnd)
+        {
+            return false;
+        }
+
+        var query = href[(queryStart + 1)..queryEnd];
+        foreach (var pair in query.Split('&'))
+        {
+            var separatorIndex = pair.IndexOf('=');
+            var encodedKey = separatorIndex >= 0
+                ? pair[..separatorIndex]
+                : pair;
+            var encodedValue = separatorIndex >= 0
+                ? pair[(separatorIndex + 1)..]
+                : string.Empty;
+
+            string key;
+            try
+            {
+                key = Uri.UnescapeDataString(
+                    encodedKey.Replace('+', ' '));
+            }
+            catch (UriFormatException)
+            {
+                continue;
+            }
+
+            if (!string.Equals(key, "semester_id", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            string value;
+            try
+            {
+                value = Uri.UnescapeDataString(
+                    encodedValue.Replace('+', ' '));
+            }
+            catch (UriFormatException)
+            {
+                return true;
+            }
+
+            if (int.TryParse(
+                    value,
+                    System.Globalization.NumberStyles.None,
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    out var valueAsInt)
+                && valueAsInt > 0)
+            {
+                parsedId = valueAsInt;
+            }
+
+            return true;
+        }
+
+        return false;
     }
 
     public List<ClassInfo> ParseClasses(string pageSource)

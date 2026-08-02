@@ -9,6 +9,7 @@ using LEB2SCRAPPER.Entity.Models.AccessKey;
 using LEB2SCRAPPER.Entity.Models.Authentication;
 using LEB2SCRAPPER.Entity.Models.Class;
 using LEB2SCRAPPER.Entity.Models.Response;
+using LEB2SCRAPPER.Entity.Models.Semester;
 using LEB2SCRAPPER.Entity.Models.Users;
 using LEB2SCRAPPER.Infrastructure.Contracts.Outbound;
 using LEB2SCRAPPER.Presentation.Filters;
@@ -224,6 +225,38 @@ public class ApiIntegrationTests
 
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
         Assert.Equal(ApiErrorCodes.AuthenticationRequired, error?.ResponseCode);
+    }
+
+    [Fact]
+    public async Task SemesterRoute_ReturnsStructuredSemesterInfo()
+    {
+        var semesterService = new FakeSemesterService
+        {
+            GetHandler = (token, _) =>
+            {
+                Assert.Equal("fake-session", token);
+                return Task.FromResult<List<SemesterInfo>?>(
+                [
+                    new SemesterInfo
+                    {
+                        Id = 46,
+                        Name = "1/2026"
+                    }
+                ]);
+            }
+        };
+        using var factory = CreateFactory(
+            new FakeActivityService(),
+            semesterService: semesterService);
+        using var client = CreateAuthenticatedClient(factory);
+
+        var response = await client.GetAsync("/Semester");
+        var semesters = await response.Content.ReadFromJsonAsync<List<SemesterInfo>>();
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var semester = Assert.Single(semesters!);
+        Assert.Equal(46, semester.Id);
+        Assert.Equal("1/2026", semester.Name);
     }
 
     [Fact]
@@ -879,7 +912,8 @@ public class ApiIntegrationTests
         IActivityService activityService,
         IOutboundRequestStatusReader? statusReader = null,
         IAccessKeyService? accessKeyService = null,
-        IUserService? userService = null)
+        IUserService? userService = null,
+        ISemesterService? semesterService = null)
     {
         return new WebApplicationFactory<Program>()
             .WithWebHostBuilder(builder =>
@@ -895,7 +929,8 @@ public class ApiIntegrationTests
                         new FakeServiceManager(
                             activityService,
                             resolvedAccessKeyService,
-                            userService));
+                            userService,
+                            semesterService));
                     services.RemoveAll<IAccessKeyService>();
                     services.AddSingleton<IAccessKeyService>(resolvedAccessKeyService);
 
@@ -947,11 +982,13 @@ public class ApiIntegrationTests
         public FakeServiceManager(
             IActivityService activityService,
             IAccessKeyService accessKeyService,
-            IUserService? userService)
+            IUserService? userService,
+            ISemesterService? semesterService)
         {
             ActivityService = activityService;
             AccessKeyService = accessKeyService;
             UserService = userService ?? new UnsupportedUserService();
+            SemesterService = semesterService ?? new UnsupportedSemesterService();
         }
 
         public IActivityService ActivityService { get; }
@@ -962,8 +999,7 @@ public class ApiIntegrationTests
 
         public IClassService ClassService { get; } = new UnsupportedClassService();
 
-        public ISemesterService SemesterService { get; } =
-            new UnsupportedSemesterService();
+        public ISemesterService SemesterService { get; }
     }
 
     private sealed class FakeAccessKeyService : IAccessKeyService
@@ -1206,11 +1242,27 @@ public class ApiIntegrationTests
 
     private sealed class UnsupportedSemesterService : ISemesterService
     {
-        public Task<List<int>?> GetSemestersAsync(
+        public Task<List<SemesterInfo>?> GetSemestersAsync(
             string token,
             CancellationToken cancellationToken = default)
         {
             throw new NotSupportedException();
+        }
+    }
+
+    private sealed class FakeSemesterService : ISemesterService
+    {
+        public Func<
+            string,
+            CancellationToken,
+            Task<List<SemesterInfo>?>> GetHandler { get; set; } =
+                (_, _) => Task.FromResult<List<SemesterInfo>?>([]);
+
+        public Task<List<SemesterInfo>?> GetSemestersAsync(
+            string token,
+            CancellationToken cancellationToken = default)
+        {
+            return GetHandler(token, cancellationToken);
         }
     }
 }
