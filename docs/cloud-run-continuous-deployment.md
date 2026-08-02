@@ -28,7 +28,7 @@ The workflow applies these settings on every deployment:
 | Minimum instances | `0` |
 | Maximum instances | `1` |
 | Runtime environment | `Production` |
-| Supabase connection | Secret Manager secret `leb2scrapper-api-supabase-connection`, version `1` |
+| Supabase connection | Secret Manager secret `leb2scrapper-api-supabase-connection`, latest enabled version |
 
 The conservative memory and concurrency values account for requests that launch
 headless Chromium. Cloud Run request concurrency is the number of simultaneous HTTP
@@ -84,15 +84,18 @@ ConnectionStrings__Production
 ```
 
 The workflow maps this setting to Secret Manager secret
-`leb2scrapper-api-supabase-connection`, pinned to version `1`. Secret rotation
-therefore requires updating the workflow version before deployment; the secret
+`leb2scrapper-api-supabase-connection`, using its latest enabled version. The secret
 value never belongs in GitHub Actions YAML.
 
 Open the Supabase project dashboard's **Connect** or database connection panel and
-copy a PostgreSQL connection string. The required fields are host, port, database,
-username, password, and SSL mode. Use SSL, for example:
+copy a PostgreSQL connection string. The application accepts Supabase's
+`postgresql://...` URI directly, or Npgsql's key/value format. Use SSL, for example:
 
 ```text
+postgresql://<supabase-user>:<password>@<supabase-host>:5432/postgres?sslmode=require
+
+# or
+
 Host=<supabase-host>;Port=5432;Database=postgres;Username=<supabase-user>;Password=<password>;SSL Mode=Require;Trust Server Certificate=true
 ```
 
@@ -106,7 +109,9 @@ disabled, so it is not the first choice here. Supabase's labels and hostnames ca
 vary by project; use the values shown by the current dashboard. See the [Supabase
 Postgres connection guide](https://supabase.com/docs/guides/database/connecting-to-postgres).
 
-Do not put this string in GitHub variables, source, or workflow YAML.
+Store this value in Secret Manager. GitHub Actions variables are visible configuration;
+GitHub Actions secrets are suitable for deployment-only secrets, but Cloud Run still
+needs the value at runtime. The workflow therefore references Secret Manager instead.
 
 ## One-time Google Cloud setup
 
