@@ -17,7 +17,7 @@ public sealed class OutboundRequestGate :
     private readonly TimeProvider _timeProvider;
     private readonly object _stateLock = new();
     private readonly Dictionary<string, ClientLimiter> _clientLimiters = new();
-    private readonly Dictionary<string, FailureState> _failureStates = new();
+    private readonly Dictionary<FailureKey, FailureState> _failureStates = new();
     private readonly Dictionary<IncidentKey, StructuralIncident> _structuralIncidents = new();
     private bool _disposed;
 
@@ -135,10 +135,12 @@ public sealed class OutboundRequestGate :
             var endpoints = Leb2OutboundEndpoints.All
                 .Select(endpoint =>
                 {
-                    var retryAt = _failureStates.TryGetValue(endpoint, out var state)
-                        && state.RetryAt > now
-                            ? state.RetryAt
-                            : (DateTimeOffset?)null;
+                    var retryAt = _failureStates
+                        .Where(pair => pair.Key.Endpoint == endpoint)
+                        .Select(pair => pair.Value)
+                        .Where(state => state.RetryAt > now)
+                        .MaxBy(state => state.RetryAt)
+                        ?.RetryAt;
                     var retryAfterSeconds = retryAt.HasValue
                         ? Math.Max(
                             1,
@@ -288,7 +290,7 @@ public sealed class OutboundRequestGate :
             ThrowIfDisposed();
             PruneExpiredState(now);
 
-            if (_failureStates.TryGetValue(context.Endpoint, out var state)
+            if (_failureStates.TryGetValue(GetFailureKey(context), out var state)
                 && state.RetryAt > now)
             {
                 throw new OutboundRequestBackoffException(state.RetryAt);
@@ -303,7 +305,8 @@ public sealed class OutboundRequestGate :
         lock (_stateLock)
         {
             PruneExpiredState(now);
-            _failureStates.TryGetValue(context.Endpoint, out var state);
+            var failureKey = GetFailureKey(context);
+            _failureStates.TryGetValue(failureKey, out var state);
 
             var failureResetWindow = TimeSpan.FromMinutes(_options.FailureResetMinutes);
             var consecutiveFailures = state is null
@@ -312,7 +315,7 @@ public sealed class OutboundRequestGate :
                     : state.ConsecutiveFailures + 1;
             var delay = CalculateBackoff(consecutiveFailures);
 
-            _failureStates[context.Endpoint] = new FailureState(
+            _failureStates[failureKey] = new FailureState(
                 consecutiveFailures,
                 now,
                 now.Add(delay));
@@ -387,7 +390,7 @@ public sealed class OutboundRequestGate :
     {
         lock (_stateLock)
         {
-            _failureStates.Remove(context.Endpoint);
+            _failureStates.Remove(GetFailureKey(context));
 
             foreach (var key in _structuralIncidents.Keys
                          .Where(key => key.Endpoint == context.Endpoint)
@@ -402,7 +405,7 @@ public sealed class OutboundRequestGate :
     {
         lock (_stateLock)
         {
-            _failureStates.Remove(context.Endpoint);
+            _failureStates.Remove(GetFailureKey(context));
         }
     }
 
@@ -451,13 +454,13 @@ public sealed class OutboundRequestGate :
     {
         var failureResetWindow = TimeSpan.FromMinutes(_options.FailureResetMinutes);
 
-        foreach (var endpoint in _failureStates
+        foreach (var failureKey in _failureStates
                      .Where(pair => pair.Value.RetryAt <= now
                          && now - pair.Value.LastFailureAt > failureResetWindow)
                      .Select(pair => pair.Key)
                      .ToList())
         {
-            _failureStates.Remove(endpoint);
+            _failureStates.Remove(failureKey);
         }
 
         var structuralWindow = TimeSpan.FromMinutes(
@@ -481,10 +484,19 @@ public sealed class OutboundRequestGate :
         ObjectDisposedException.ThrowIf(_disposed, this);
     }
 
+    private static FailureKey GetFailureKey(OutboundRequestContext context)
+    {
+        return new FailureKey(
+            context.Endpoint,
+            context.UsesSessionCredential ? context.ClientKey : null);
+    }
+
     private sealed record FailureState(
         int ConsecutiveFailures,
         DateTimeOffset LastFailureAt,
         DateTimeOffset RetryAt);
+
+    private sealed record FailureKey(string Endpoint, string? ClientKey);
 
     private sealed record IncidentKey(string Endpoint, string FailureShape);
 

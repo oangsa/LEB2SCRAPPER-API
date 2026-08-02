@@ -477,14 +477,37 @@ Possible error codes:
 | `500` | `UNEXPECTED_ERROR` | An unexpected server error occurred. |
 | `502` | `LEB2_UNAVAILABLE` | LEB2 rejected or could not complete the request. |
 | `502` | `SCRAPE_RESPONSE_CHANGED` | LEB2 returned an unexpected HTML or JSON structure. |
-| `503` | `LEB2_UNAVAILABLE` | A transient LEB2 network, rate-limit, or server failure occurred. |
-| `503` | `REQUEST_BACKOFF_ACTIVE` | This LEB2 operation is temporarily paused after a recent failure. |
+| `503` | `LEB2_UNAVAILABLE` | A transient LEB2 failure or local browser-automation failure prevented completion. |
+| `503` | `REQUEST_BACKOFF_ACTIVE` | This operation's backoff scope is temporarily paused after a recent upstream failure. |
 | `503` | `ACCESS_KEY_STORE_UNAVAILABLE` | Supabase access-key validation is temporarily unavailable. |
 
 Responses with `CLIENT_THROTTLE_ACTIVE` or `REQUEST_BACKOFF_ACTIVE` include a
 `Retry-After` response header. LEB2 session failures include
 `WWW-Authenticate: Bearer`; access-key failures use the `ACCESS_KEY_*` response
 codes and do not describe the access key as a bearer JWT.
+
+### LEB2 scraping and backoff behavior
+
+Backoff protects genuine upstream LEB2 failures without allowing one user's
+session to pause another user's session:
+
+- For a request using a session credential, backoff is keyed by the fixed LEB2
+  endpoint and an opaque server-side fingerprint of that session. A failure for
+  one session does not block another session on the same application instance.
+- For a request that does not use a session credential, backoff is keyed by the
+  endpoint only.
+- A successful request clears only its matching backoff state. Session expiration
+  returns `401 SESSION_EXPIRED` and does not create upstream backoff.
+- Client fingerprints, cookies, access keys, and credentials are never included
+  in API responses or health output.
+
+For `/api/v1/Semester`, the scraper waits up to the bounded configured element
+wait for at least one usable semester link after navigation and session
+validation. If that semantic DOM condition expires, the API returns
+`502 SCRAPE_RESPONSE_CHANGED` and retains structural-failure tracking and alert
+threshold behavior. A ChromeDriver, Chromium, CDP, navigation, or other WebDriver
+automation failure returns `503 LEB2_UNAVAILABLE` but does not activate upstream
+endpoint backoff.
 
 ### Validation error
 
@@ -702,7 +725,8 @@ Relevant error responses:
 - `401 SESSION_EXPIRED` when LEB2 rejects the session.
 - `429 CLIENT_THROTTLE_ACTIVE` when this client has too many queued requests.
 - `502 SCRAPE_RESPONSE_CHANGED` when the rendered page no longer matches the scraper.
-- `503 LEB2_UNAVAILABLE` or `503 REQUEST_BACKOFF_ACTIVE` for transient failures.
+- `503 LEB2_UNAVAILABLE` for a transient LEB2 or local browser-automation failure.
+- `503 REQUEST_BACKOFF_ACTIVE` when this session's `semesters` backoff is active.
 - `503 ACCESS_KEY_STORE_UNAVAILABLE` when Supabase access-key validation is temporarily unavailable.
 - `500 UNEXPECTED_ERROR` for an unexpected server error.
 
@@ -1119,6 +1143,12 @@ looks like:
   "retryAfterSeconds": 30
 }
 ```
+
+For session-scoped backoff, an endpoint is shown as unavailable when any session
+backoff for that endpoint is active. `retryAt` and `retryAfterSeconds` report the
+latest active retry time observed for that endpoint; they do not identify which
+session is affected. A health response therefore cannot be used to determine
+whether a particular session is currently backoff-blocked.
 
 This endpoint always returns `200 OK`, including when the reported status is
 `degraded`, and includes:
