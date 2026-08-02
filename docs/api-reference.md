@@ -209,7 +209,8 @@ When present, `activitySubmissionSubmittedAt` has this shape:
 ```
 
 `fileActivities` and `submissions` contain upstream-defined JSON objects. Their
-internal fields are not fixed by this API.
+internal fields are not fixed by this API. `questions` contains integer question
+IDs.
 
 ### Standard error
 
@@ -579,6 +580,10 @@ Relevant error responses:
 - `401 AUTHENTICATION_REQUIRED` when the session header is absent or empty.
 - `401 ACCESS_KEY_REQUIRED` or `401 ACCESS_KEY_INVALID` when the access key is absent, malformed, or unknown.
 - `403 ACCESS_KEY_NOT_ACTIVATED` when the key has not been claimed through `/User/login`.
+- `403 ACCESS_KEY_IDENTITY_MISMATCH` when `X-LEB2-USER-ID` does not match the
+  LEB2 identity bound to the access key.
+- `403 ACCESS_KEY_REAUTHENTICATION_REQUIRED` when the access-key owner's stored
+  LEB2 identity has not been initialized.
 - `401 SESSION_EXPIRED` when LEB2 rejects the session.
 - `404 RESOURCE_NOT_FOUND` when the class does not belong to the supplied semester.
 - `429 CLIENT_THROTTLE_ACTIVE` when this client has too many queued requests.
@@ -669,7 +674,9 @@ The operation is fail-fast. It returns an error instead of a partial activity li
 if class discovery or any class activity request fails.
 
 Relevant error responses are the same as
-`GET /Activity/{semesterId}/{classId}`.
+`GET /Activity/{semesterId}/{classId}`, except `404 RESOURCE_NOT_FOUND`: that
+response applies only to the class-membership check performed when `classId` is
+supplied.
 
 ### GET `/Activity/{semesterId}/snapshot`
 
@@ -766,7 +773,9 @@ If the semester has no published classes:
 The operation is fail-fast and never returns a successful partial snapshot.
 
 Relevant error responses are the same as
-`GET /Activity/{semesterId}/{classId}`.
+`GET /Activity/{semesterId}/{classId}`, except `404 RESOURCE_NOT_FOUND`: that
+response applies only to the class-membership check performed when `classId` is
+supplied.
 
 ### GET `/health/leb2`
 
