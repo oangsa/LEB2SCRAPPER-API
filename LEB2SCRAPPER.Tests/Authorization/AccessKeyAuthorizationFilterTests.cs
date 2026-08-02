@@ -14,7 +14,9 @@ namespace LEB2SCRAPPER.Tests.Authorization;
 public class AccessKeyAuthorizationFilterTests
 {
     private static readonly Guid KeyId =
-        Guid.Parse("9a7b979b-a361-4170-aee7-cba89445495b");
+        Guid.Parse("00000000-0000-0000-0000-000000000001");
+    private static readonly Guid UserId =
+        Guid.Parse("00000000-0000-0000-0000-000000000002");
 
     [Fact]
     public async Task MissingHeader_RequiresAccessKey()
@@ -46,7 +48,7 @@ public class AccessKeyAuthorizationFilterTests
         context.HttpContext.Request.Headers[AccessKeyAuthorizationFilter.HeaderName] =
             KeyId.ToString();
         var filter = new AccessKeyAuthorizationFilter(
-            new StubAccessKeyService(new AccessKeyState(KeyId, null, null)),
+            new StubAccessKeyService(new AccessKeyState(KeyId, null, null, null)),
             requestContext,
             AccessKeyRequirement.Provisioned);
 
@@ -62,7 +64,9 @@ public class AccessKeyAuthorizationFilterTests
         var context = CreateContext();
         context.HttpContext.Request.Headers[AccessKeyAuthorizationFilter.HeaderName] =
             KeyId.ToString();
-        var filter = CreateFilter(AccessKeyRequirement.Activated, new AccessKeyState(KeyId, null, null));
+        var filter = CreateFilter(
+            AccessKeyRequirement.Activated,
+            new AccessKeyState(KeyId, null, null, null));
 
         await Assert.ThrowsAsync<AccessKeyNotActivatedException>(() =>
             filter.OnAuthorizationAsync(context));
@@ -83,7 +87,8 @@ public class AccessKeyAuthorizationFilterTests
         AccessKeyState? state = null)
     {
         return new AccessKeyAuthorizationFilter(
-            new StubAccessKeyService(state ?? new AccessKeyState(KeyId, Guid.NewGuid(), "60000000")),
+            new StubAccessKeyService(
+                state ?? new AccessKeyState(KeyId, UserId, "student-001", 1001)),
             new AccessKeyRequestContext(),
             requirement);
     }
@@ -104,6 +109,22 @@ public class AccessKeyAuthorizationFilterTests
             return Task.FromResult(_state);
         }
 
+        public void EnsureStudentIdentity(
+            AccessKeyState state,
+            string studentId)
+        {
+        }
+
+        public void EnsureLeb2IdentityInitialized(AccessKeyState state)
+        {
+        }
+
+        public void EnsureLeb2UserIdentity(
+            AccessKeyState state,
+            int leb2UserId)
+        {
+        }
+
         public Task<AccessKeyState> ValidateActivatedKeyAsync(
             Guid keyId,
             CancellationToken cancellationToken = default)
@@ -119,6 +140,7 @@ public class AccessKeyAuthorizationFilterTests
         public Task RegisterSuccessfulLoginAsync(
             Guid keyId,
             string studentId,
+            int leb2UserId,
             string name,
             CancellationToken cancellationToken = default)
         {

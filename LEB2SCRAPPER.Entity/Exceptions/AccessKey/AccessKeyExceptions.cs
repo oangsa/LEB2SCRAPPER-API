@@ -32,6 +32,30 @@ public sealed class AccessKeyAlreadyAssignedException : Exception
     }
 }
 
+public sealed class AccessKeyIdentityMismatchException : Exception
+{
+    public AccessKeyIdentityMismatchException()
+        : base("The access key cannot be used with this account.")
+    {
+    }
+}
+
+public sealed class AccessKeyReauthenticationRequiredException : Exception
+{
+    public AccessKeyReauthenticationRequiredException()
+        : base("The access key requires reauthentication.")
+    {
+    }
+}
+
+public sealed class AccessKeyIdentityConflictException : Exception
+{
+    public AccessKeyIdentityConflictException()
+        : base("The access key identity cannot be registered.")
+    {
+    }
+}
+
 public sealed class AccessKeyDatabaseException : Exception
 {
     public AccessKeyDatabaseException(

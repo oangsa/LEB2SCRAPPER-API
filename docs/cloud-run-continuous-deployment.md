@@ -77,11 +77,16 @@ variables are appropriate.
 
 ## Supabase database connection
 
-The Production application expects the PostgreSQL connection string in:
+The application expects the PostgreSQL connection string in every environment as:
 
 ```text
-ConnectionStrings__Production
+ConnectionStrings__Supabase
 ```
+
+The workflow maps this setting to Secret Manager secret
+`leb2scrapper-api-supabase-connection`, pinned to version `1`. Secret rotation
+therefore requires updating the workflow version before deployment; the secret
+value never belongs in GitHub Actions YAML.
 
 Open the Supabase project dashboard's **Connect** or database connection panel and
 copy a PostgreSQL connection string. The required fields are host, port, database,
@@ -181,7 +186,7 @@ export. The runtime account does not need broad project roles, but it does need 
 Secret Manager accessor role shown below.
 
 Create the Secret Manager secret and add the connection string from a protected local
-file. The file must contain only the value for `ConnectionStrings:Production`; never
+file. The file must contain only the value for `ConnectionStrings:Supabase`; never
 commit it:
 
 ```bash

@@ -97,6 +97,47 @@ public class GlobalExceptionMiddlewareTests
     }
 
     [Fact]
+    public async Task AccessKeyIdentityMismatch_ReturnsGenericForbiddenResponse()
+    {
+        var (context, response) = await InvokeAsync(
+            new AccessKeyIdentityMismatchException());
+
+        Assert.Equal(StatusCodes.Status403Forbidden, context.Response.StatusCode);
+        Assert.Equal(ApiErrorCodes.AccessKeyIdentityMismatch, response.ResponseCode);
+        Assert.Equal(
+            "The access key cannot be used with this account.",
+            response.Message);
+    }
+
+    [Fact]
+    public async Task AccessKeyReauthenticationRequired_ReturnsGenericForbiddenResponse()
+    {
+        var (context, response) = await InvokeAsync(
+            new AccessKeyReauthenticationRequiredException());
+
+        Assert.Equal(StatusCodes.Status403Forbidden, context.Response.StatusCode);
+        Assert.Equal(
+            ApiErrorCodes.AccessKeyReauthenticationRequired,
+            response.ResponseCode);
+        Assert.Equal(
+            "The access key requires reauthentication.",
+            response.Message);
+    }
+
+    [Fact]
+    public async Task AccessKeyIdentityConflict_ReturnsControlledConflictResponse()
+    {
+        var (context, response) = await InvokeAsync(
+            new AccessKeyIdentityConflictException());
+
+        Assert.Equal(StatusCodes.Status409Conflict, context.Response.StatusCode);
+        Assert.Equal(ApiErrorCodes.AccessKeyIdentityConflict, response.ResponseCode);
+        Assert.Equal(
+            "The access key identity cannot be registered.",
+            response.Message);
+    }
+
+    [Fact]
     public async Task ClientCancellation_DoesNotWriteAnErrorResponse()
     {
         using var cancellationSource = new CancellationTokenSource();

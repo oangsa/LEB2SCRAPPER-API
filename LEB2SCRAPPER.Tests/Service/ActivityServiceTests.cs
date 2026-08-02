@@ -582,6 +582,7 @@ public class ActivityServiceTests
         public Task UpsertUserAndClaimKeyAsync(
             Guid keyId,
             string studentId,
+            int leb2UserId,
             string name,
             CancellationToken cancellationToken = default)
         {

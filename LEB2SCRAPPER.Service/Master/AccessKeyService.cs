@@ -33,26 +33,80 @@ public sealed class AccessKeyService(ICoreAdapterManager coreAdapterManager) : I
         return state;
     }
 
+    public void EnsureStudentIdentity(
+        AccessKeyState state,
+        string studentId)
+    {
+        if (state.IsAssigned
+            && string.IsNullOrWhiteSpace(state.StudentId))
+        {
+            throw new AccessKeyReauthenticationRequiredException();
+        }
+
+        var normalizedStudentId = NormalizeStudentId(studentId);
+
+        if (state.StudentId is not null
+            && !string.Equals(
+                NormalizeStudentId(state.StudentId),
+                normalizedStudentId,
+                StringComparison.Ordinal))
+        {
+            throw new AccessKeyIdentityMismatchException();
+        }
+    }
+
+    public void EnsureLeb2UserIdentity(
+        AccessKeyState state,
+        int leb2UserId)
+    {
+        if (leb2UserId <= 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(leb2UserId),
+                "LEB2 user ID must be greater than zero.");
+        }
+
+        if (!state.IsAssigned || !state.Leb2UserId.HasValue)
+        {
+            throw new AccessKeyReauthenticationRequiredException();
+        }
+
+        if (state.Leb2UserId.Value != leb2UserId)
+        {
+            throw new AccessKeyIdentityMismatchException();
+        }
+    }
+
+    public void EnsureLeb2IdentityInitialized(AccessKeyState state)
+    {
+        if (!state.IsAssigned || !state.Leb2UserId.HasValue)
+        {
+            throw new AccessKeyReauthenticationRequiredException();
+        }
+    }
+
     public Task RegisterSuccessfulLoginAsync(
         Guid keyId,
         string studentId,
+        int leb2UserId,
         string name,
         CancellationToken cancellationToken = default)
     {
         ValidateKeyId(keyId);
 
-        var normalizedStudentId = studentId.Trim();
+        var normalizedStudentId = NormalizeStudentId(studentId);
 
-        if (normalizedStudentId.Length == 0)
+        if (leb2UserId <= 0)
         {
-            throw new ArgumentException(
-                "Student identifier cannot be empty.",
-                nameof(studentId));
+            throw new ArgumentOutOfRangeException(
+                nameof(leb2UserId),
+                "LEB2 user ID must be greater than zero.");
         }
 
         return _repositoryManager.AccessKeyRepository.UpsertUserAndClaimKeyAsync(
             keyId,
             normalizedStudentId,
+            leb2UserId,
             NormalizeWhitespace(name),
             cancellationToken);
     }
@@ -86,5 +140,19 @@ public sealed class AccessKeyService(ICoreAdapterManager coreAdapterManager) : I
         return string.Join(
             ' ',
             value.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+    }
+
+    private static string NormalizeStudentId(string value)
+    {
+        var normalizedStudentId = value.Trim();
+
+        if (normalizedStudentId.Length == 0)
+        {
+            throw new ArgumentException(
+                "Student identifier cannot be empty.",
+                nameof(value));
+        }
+
+        return normalizedStudentId;
     }
 }

@@ -29,9 +29,9 @@ Application startup begins in `LEB2SCRAPPER/Program.cs`:
 2. Controllers from `LEB2SCRAPPER.Presentation` are registered through an application part.
 3. `ICoreAdapterManager`, `IServiceManager`, `IRepositoryManager`, the access-key
    repository/service, and request context are registered as scoped dependencies.
-4. Production requires a syntactically valid `ConnectionStrings:Production` value;
-   Development uses `ConnectionStrings:Supabase`; no tables or migrations are
-   created.
+4. Every environment uses a syntactically valid `ConnectionStrings:Supabase` value
+   for the existing Supabase PostgreSQL database; Production fails clearly when it
+   is missing. No tables or migrations are created.
 5. OpenAPI, Swagger, permissive CORS, and the global exception middleware are configured.
 6. Controller routes are mapped and the application starts.
 
@@ -261,10 +261,10 @@ Entities must remain free of ASP.NET controller behavior, Selenium behavior, and
 - Chrome or Chromium compatible with the configured Selenium driver
 - Network access to the LEB2 sign-in, application, and public API endpoints
 
-The application configuration key `ConnectionStrings:Production` is required in
+The application configuration key `ConnectionStrings:Supabase` is required in
 Production. ASP.NET Core maps it from the environment variable
-`ConnectionStrings__Production`. Development uses `ConnectionStrings:Supabase` and
-can use the host project's user-secrets store.
+`ConnectionStrings__Supabase`. Development can use the host project's user-secrets
+store with the same key.
 
 Useful ASP.NET Core environment variables include:
 
@@ -272,7 +272,7 @@ Useful ASP.NET Core environment variables include:
   - Use `Development` to enable Swagger.
 - `ASPNETCORE_URLS`
   - Overrides the listening URLs when needed.
-- `ConnectionStrings__Production`
+- `ConnectionStrings__Supabase`
   - Production PostgreSQL connection string for the existing Supabase database.
     Never commit it.
 
@@ -323,8 +323,10 @@ The default container runs as Production, so its Swagger UI is not enabled unles
   - Requires a provisioned `access-key`, accepts LEB2 credentials, upserts the local
     student, claims an unassigned key, and returns the mapped user profile.
 - `POST /User/cookie`
-  - Requires an assigned `access-key`, accepts LEB2 credentials, and returns a
-    scraped LEB2 session cookie. It does not assign keys.
+  - Requires an assigned `access-key` with an initialized `leb2_user_id`, accepts
+    matching LEB2 credentials, and returns a scraped LEB2 session cookie. Legacy
+    assigned users must complete `/User/login` once after the schema change. It
+    does not assign keys.
 - `GET /Semester`
   - Requires an assigned `access-key` and the LEB2 session value in `Authorization`.
 - `GET /Class/{id}`
@@ -334,17 +336,17 @@ The default container runs as Production, so its Swagger UI is not enabled unles
   - Returns activities for one class.
   - Verifies that `classId` belongs to `semesterId`; otherwise returns the normal
     `404 RESOURCE_NOT_FOUND` contract.
-  - Requires a positive user ID in the `X-LEB2-USER-ID` header.
+  - Requires `X-LEB2-USER-ID` to match the owner's stored `leb2_user_id`.
   - Requires an assigned `access-key`.
   - Requires the LEB2 session value as a bearer credential in the `Authorization` header.
 - `GET /Activity/{semesterId}`
   - Returns activities for every class in one semester.
-  - Requires a positive user ID in the `X-LEB2-USER-ID` header.
+  - Requires `X-LEB2-USER-ID` to match the owner's stored `leb2_user_id`.
   - Requires an assigned `access-key`.
   - Requires the LEB2 session value as a bearer credential in the `Authorization` header.
 - `GET /Activity/{semesterId}/snapshot`
-  - Requires a positive user ID, an assigned `access-key`, and the LEB2 session
-    value in the `Authorization` header.
+  - Requires an assigned `access-key`, a stored `leb2_user_id`, and a matching
+    `X-LEB2-USER-ID` assertion with the LEB2 session value in `Authorization`.
 - `GET /health/leb2`
   - Returns `200 OK` with `Cache-Control: no-store`.
   - Reports process-local observed request-gate/backoff state; it does not contact
@@ -355,14 +357,16 @@ The current `Authorization` header is passed through as an LEB2 session/cookie v
 ### Typical API flow
 
 1. Manually insert a UUID into `keys` in Supabase and give it to the user out of band.
-2. Call `POST /User/login` with that `access-key` and valid LEB2 credentials.
+2. Call `POST /User/login` with that `access-key` and valid LEB2 credentials. The
+   successful LEB2 `User.Id` becomes `users.leb2_user_id`.
 3. The successful login upserts `users` by trimmed username and claims the key in
    `user_keys`; invalid LEB2 credentials do not create either record.
 4. Call `POST /User/cookie` with the assigned `access-key` to obtain an LEB2 session cookie.
 5. Treat the returned cookie as a secret and send it with the `access-key` in data requests.
 6. Use a semester ID to request classes.
-7. Send the user ID in `X-LEB2-USER-ID` and use the semester ID, plus an
-   optional class ID, to request activities.
+7. Send the server-bound numeric ID in `X-LEB2-USER-ID` and use the semester ID,
+   plus an optional class ID, to request activities. The header is a compatibility
+   assertion, not an identity source.
 
 External LEB2 HTML, selectors, payloads, and response shapes can change independently of this repository. When an integration fails, inspect the current external contract before changing local models or scraping logic.
 

@@ -45,7 +45,11 @@ access-key: <uuid-from-keys.id>
 ```
 
 The UUID is the `keys.id` value manually provisioned in Supabase. It is a secret
-bearer credential. Do not put it in a URL, query string, request body, or log.
+per-user API credential, not a JWT. An activated key is bound to one local student
+through `keys.id`, `user_keys`, `users.student_id`, and `users.leb2_user_id`.
+It cannot be used to log in as another student, obtain that student's LEB2 session,
+or request activities with that student's numeric LEB2 ID. Do not put it in a URL,
+query string, request body, or log.
 `POST /User/login` accepts a provisioned but unassigned key. `/User/cookie` and
 all data routes require an assigned key.
 
@@ -67,6 +71,10 @@ Every activity endpoint also requires:
 X-LEB2-USER-ID: <positive-integer-user-id>
 ```
 
+This header remains for compatibility. It is a client-supplied assertion and must
+match the numeric LEB2 identity stored for the access-key owner. The opaque
+`Authorization` session value is separate and is never parsed to derive identity.
+
 The `access-key` header name is case-insensitive. Its value must be one UUID from
 `keys.id`; send exactly one value. The API never accepts the key in a URL, query
 string, or normal request body.
@@ -81,7 +89,7 @@ Example manual provisioning with a fake UUID:
 ```sql
 INSERT INTO keys (id, created_by, updated_by)
 VALUES (
-    '9a7b979b-a361-4170-aee7-cba89445495b',
+    '00000000-0000-4000-8000-000000000001',
     'admin',
     'admin'
 );
@@ -89,19 +97,21 @@ VALUES (
 
 Use the key once with `/User/login`. After successful LEB2 authentication, the API:
 
-1. Trims the login username into `users.student_id`.
-2. Builds `users.name` from the English LEB2 name, falling back to Thai fields.
-3. Upserts the user by `student_id`.
-4. Claims the key in `user_keys` in the same PostgreSQL transaction.
+1. Normalizes the login username into `users.student_id`.
+2. Persists authoritative LEB2 `User.Id` as `users.leb2_user_id`.
+3. Builds `users.name` from the English LEB2 name, falling back to Thai fields.
+4. Upserts the user by `student_id` and claims the key in the same PostgreSQL transaction.
 
 An invalid LEB2 login creates neither the user nor the assignment. A key already
-assigned to another student is never transferred automatically.
+assigned to another student is never transferred automatically. Existing users
+with null `leb2_user_id` are initialized by their next successful `/User/login`;
+activity requests fail closed until that happens.
 
 | Key state | `/User/login` | `/User/cookie` and data routes |
 | --- | --- | --- |
 | Missing from `keys` | Rejected | Rejected |
 | Provisioned, unassigned | Allowed | Rejected with `ACCESS_KEY_NOT_ACTIVATED` |
-| Assigned in `user_keys` | Allowed, idempotent for the owner | Allowed |
+| Assigned in `user_keys` | Allowed, idempotent for the owner | Allowed when `leb2_user_id` is initialized |
 
 To revoke access, delete the `keys` row. To make a key claimable again, delete its
 `user_keys` row. The supplied foreign-key cascades clean up related assignments.
@@ -207,6 +217,9 @@ Possible error codes:
 | `401` | `SESSION_EXPIRED` | LEB2 rejected or redirected the supplied session. |
 | `403` | `ACCESS_KEY_NOT_ACTIVATED` | The key must first be claimed by a successful `/User/login`. |
 | `403` | `ACCESS_KEY_ALREADY_ASSIGNED` | The key belongs to another account. |
+| `403` | `ACCESS_KEY_IDENTITY_MISMATCH` | The key cannot be used with the submitted student or LEB2 user ID. |
+| `403` | `ACCESS_KEY_REAUTHENTICATION_REQUIRED` | The local user must complete `/User/login` again to initialize identity. |
+| `409` | `ACCESS_KEY_IDENTITY_CONFLICT` | Successful LEB2 identity conflicts with an established local identity. |
 | `404` | `RESOURCE_NOT_FOUND` | The requested user, resource, or class/semester relationship was not found. |
 | `408` | `LEB2_UNAVAILABLE` | The request timed out. |
 | `429` | `CLIENT_THROTTLE_ACTIVE` | The client has too many active or queued LEB2 requests. |
@@ -256,7 +269,7 @@ allowed here so this successful LEB2 login can claim it.
 Required header:
 
 ```http
-access-key: 9a7b979b-a361-4170-aee7-cba89445495b
+access-key: 00000000-0000-4000-8000-000000000001
 ```
 
 Request body:
@@ -287,6 +300,8 @@ Relevant error responses:
 - `400 INVALID_REQUEST` for an invalid request body or argument.
 - `401 ACCESS_KEY_REQUIRED` or `401 ACCESS_KEY_INVALID` when the access key is absent, malformed, or unknown.
 - `403 ACCESS_KEY_ALREADY_ASSIGNED` when another account already owns the key.
+- `403 ACCESS_KEY_IDENTITY_MISMATCH` when an assigned key is used with another username.
+- `409 ACCESS_KEY_IDENTITY_CONFLICT` when successful LEB2 `User.Id` conflicts with the established local identity.
 - `404 RESOURCE_NOT_FOUND` when the credentials are rejected or no user is found.
 - `429 CLIENT_THROTTLE_ACTIVE` when this client has too many queued requests.
 - `502 LEB2_UNAVAILABLE` when LEB2 rejects or cannot complete the upstream request.
@@ -301,12 +316,14 @@ Signs in through Selenium and returns the complete LEB2 session cookie needed by
 protected endpoints.
 
 Authentication: `access-key` header with an already assigned UUID. The key must
-first be claimed by a successful `/User/login`.
+first be claimed by a successful `/User/login` and must have a stored
+`users.leb2_user_id`. Legacy assigned users with a null value must complete
+`/User/login` again before requesting a cookie.
 
 Required header:
 
 ```http
-access-key: 9a7b979b-a361-4170-aee7-cba89445495b
+access-key: 00000000-0000-4000-8000-000000000001
 ```
 
 Request body:
@@ -341,11 +358,14 @@ Relevant error responses:
 - `400 INVALID_REQUEST` for an invalid request body.
 - `401 ACCESS_KEY_REQUIRED` or `401 ACCESS_KEY_INVALID` when the access key is absent, malformed, or unknown.
 - `403 ACCESS_KEY_NOT_ACTIVATED` when `/User/login` has not claimed the key yet.
+- `403 ACCESS_KEY_IDENTITY_MISMATCH` when the credentials belong to another student.
+- `403 ACCESS_KEY_REAUTHENTICATION_REQUIRED` when local identity data is incomplete.
 - `404 RESOURCE_NOT_FOUND` if the login completes without a usable result.
 - `429 CLIENT_THROTTLE_ACTIVE` when this client has too many queued requests.
 - `502 LEB2_UNAVAILABLE` when LEB2 does not accept the credentials or cannot complete the login.
 - `502 SCRAPE_RESPONSE_CHANGED` when the LEB2 login page no longer matches the scraper.
 - `503 LEB2_UNAVAILABLE` or `503 REQUEST_BACKOFF_ACTIVE` for transient failures.
+- `503 ACCESS_KEY_STORE_UNAVAILABLE` when Supabase access-key validation is temporarily unavailable.
 - `500 UNEXPECTED_ERROR` for an unexpected server error.
 
 ### GET `/Semester`
@@ -355,7 +375,7 @@ Returns the semester IDs visible to the authenticated LEB2 session.
 Required header:
 
 ```http
-access-key: 9a7b979b-a361-4170-aee7-cba89445495b
+access-key: 00000000-0000-4000-8000-000000000001
 Authorization: Bearer <leb2-session-cookie>
 ```
 
@@ -401,7 +421,7 @@ Route parameter:
 Required header:
 
 ```http
-access-key: 9a7b979b-a361-4170-aee7-cba89445495b
+access-key: 00000000-0000-4000-8000-000000000001
 Authorization: Bearer <leb2-session-cookie>
 ```
 
@@ -411,7 +431,7 @@ Example request:
 
 ```http
 GET /Class/101
-access-key: 9a7b979b-a361-4170-aee7-cba89445495b
+access-key: 00000000-0000-4000-8000-000000000001
 Authorization: Bearer <leb2-session-cookie>
 ```
 
@@ -467,7 +487,7 @@ Route parameters:
 Required headers:
 
 ```http
-access-key: 9a7b979b-a361-4170-aee7-cba89445495b
+access-key: 00000000-0000-4000-8000-000000000001
 Authorization: Bearer <leb2-session-cookie>
 X-LEB2-USER-ID: 2001
 ```
@@ -478,7 +498,7 @@ Example request:
 
 ```http
 GET /Activity/101/3001
-access-key: 9a7b979b-a361-4170-aee7-cba89445495b
+access-key: 00000000-0000-4000-8000-000000000001
 Authorization: Bearer <leb2-session-cookie>
 X-LEB2-USER-ID: 2001
 ```
@@ -565,7 +585,7 @@ Route parameter:
 Required headers:
 
 ```http
-access-key: 9a7b979b-a361-4170-aee7-cba89445495b
+access-key: 00000000-0000-4000-8000-000000000001
 Authorization: Bearer <leb2-session-cookie>
 X-LEB2-USER-ID: 2001
 ```
@@ -576,7 +596,7 @@ Example request:
 
 ```http
 GET /Activity/101
-access-key: 9a7b979b-a361-4170-aee7-cba89445495b
+access-key: 00000000-0000-4000-8000-000000000001
 Authorization: Bearer <leb2-session-cookie>
 X-LEB2-USER-ID: 2001
 ```
@@ -646,7 +666,7 @@ Route parameter:
 Required headers:
 
 ```http
-access-key: 9a7b979b-a361-4170-aee7-cba89445495b
+access-key: 00000000-0000-4000-8000-000000000001
 Authorization: Bearer <leb2-session-cookie>
 X-LEB2-USER-ID: 2001
 ```
@@ -657,7 +677,7 @@ Example request:
 
 ```http
 GET /Activity/101/snapshot
-access-key: 9a7b979b-a361-4170-aee7-cba89445495b
+access-key: 00000000-0000-4000-8000-000000000001
 Authorization: Bearer <leb2-session-cookie>
 X-LEB2-USER-ID: 2001
 ```

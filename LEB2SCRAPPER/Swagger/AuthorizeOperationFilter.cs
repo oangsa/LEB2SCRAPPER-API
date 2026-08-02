@@ -8,8 +8,24 @@ namespace LEB2SCRAPPER.Swagger;
 
 public sealed class AuthorizeOperationFilter : IOperationFilter
 {
+    private const string Leb2UserIdHeaderName = "X-LEB2-USER-ID";
+
     public void Apply(OpenApiOperation operation, OperationFilterContext context)
     {
+        foreach (var parameter in operation.Parameters)
+        {
+            if (parameter.In == ParameterLocation.Header
+                && string.Equals(
+                    parameter.Name,
+                    Leb2UserIdHeaderName,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                parameter.Description =
+                    "Compatibility assertion for the authoritative LEB2 User.Id. "
+                    + "Must match the identity bound to access-key.";
+            }
+        }
+
         var endpointMetadata = context.ApiDescription.ActionDescriptor.EndpointMetadata;
 
         if (endpointMetadata.OfType<IAllowAnonymous>().Any())

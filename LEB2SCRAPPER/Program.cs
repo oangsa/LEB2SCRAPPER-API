@@ -1,4 +1,3 @@
-using System.Data.Common;
 using LEB2SCRAPPER.Authentication;
 using LEB2SCRAPPER.Contracts.Repository;
 using LEB2SCRAPPER.Contracts.Repository.Core;
@@ -26,15 +25,13 @@ using LEB2SCRAPPER.Swagger;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.OpenApi.Models;
+using Npgsql;
 
 var builder = WebApplication.CreateBuilder(args);
 
-var connectionStringName = builder.Environment.IsProduction()
-    ? "Production"
-    : "Supabase";
-var databaseConnectionString = builder.Configuration.GetConnectionString(
-    connectionStringName);
-var connectionStringConfigurationKey = $"ConnectionStrings:{connectionStringName}";
+const string connectionStringName = "Supabase";
+const string connectionStringConfigurationKey = "ConnectionStrings:Supabase";
+var databaseConnectionString = builder.Configuration.GetConnectionString(connectionStringName);
 
 if (builder.Environment.IsProduction()
     && string.IsNullOrWhiteSpace(databaseConnectionString))
@@ -47,10 +44,7 @@ if (!string.IsNullOrWhiteSpace(databaseConnectionString))
 {
     try
     {
-        _ = new DbConnectionStringBuilder
-        {
-            ConnectionString = databaseConnectionString
-        };
+        _ = new NpgsqlConnectionStringBuilder(databaseConnectionString);
     }
     catch (ArgumentException)
     {

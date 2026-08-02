@@ -112,6 +112,24 @@ public class GlobalExceptionMiddleware
                 context.Response.StatusCode = StatusCodes.Status403Forbidden;
                 break;
 
+            case AccessKeyIdentityMismatchException:
+                response.Message = "The access key cannot be used with this account.";
+                response.ResponseCode = ApiErrorCodes.AccessKeyIdentityMismatch;
+                context.Response.StatusCode = StatusCodes.Status403Forbidden;
+                break;
+
+            case AccessKeyReauthenticationRequiredException:
+                response.Message = "The access key requires reauthentication.";
+                response.ResponseCode = ApiErrorCodes.AccessKeyReauthenticationRequired;
+                context.Response.StatusCode = StatusCodes.Status403Forbidden;
+                break;
+
+            case AccessKeyIdentityConflictException:
+                response.Message = "The access key identity cannot be registered.";
+                response.ResponseCode = ApiErrorCodes.AccessKeyIdentityConflict;
+                context.Response.StatusCode = StatusCodes.Status409Conflict;
+                break;
+
             case AccessKeyDatabaseException databaseException when databaseException.IsTransient:
                 response.Message = "Access-key authorization is temporarily unavailable.";
                 response.ResponseCode = ApiErrorCodes.AccessKeyStoreUnavailable;

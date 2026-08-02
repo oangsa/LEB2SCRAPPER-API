@@ -12,20 +12,25 @@ namespace LEB2SCRAPPER.Tests.Service;
 
 public class AccessKeyServiceTests
 {
+    private static readonly Guid KeyId =
+        Guid.Parse("00000000-0000-0000-0000-000000000001");
+    private static readonly Guid UserId =
+        Guid.Parse("00000000-0000-0000-0000-000000000002");
+
     [Fact]
     public async Task ValidateProvisionedKey_AllowsUnassignedKey()
     {
-        var keyId = Guid.Parse("9a7b979b-a361-4170-aee7-cba89445495b");
         var repository = new StubAccessKeyRepository
         {
-            State = new AccessKeyState(keyId, null, null)
+            State = new AccessKeyState(KeyId, null, null, null)
         };
         var service = CreateService(repository);
 
-        var state = await service.ValidateProvisionedKeyAsync(keyId);
+        var state = await service.ValidateProvisionedKeyAsync(KeyId);
 
-        Assert.Equal(keyId, state.KeyId);
+        Assert.Equal(KeyId, state.KeyId);
         Assert.False(state.IsAssigned);
+        Assert.Null(state.Leb2UserId);
     }
 
     [Fact]
@@ -36,21 +41,20 @@ public class AccessKeyServiceTests
 
         await Assert.ThrowsAsync<AccessKeyInvalidException>(() =>
             service.ValidateProvisionedKeyAsync(
-                Guid.Parse("9a7b979b-a361-4170-aee7-cba89445495b")));
+                KeyId));
     }
 
     [Fact]
     public async Task ValidateActivatedKey_RejectsUnassignedKey()
     {
-        var keyId = Guid.Parse("9a7b979b-a361-4170-aee7-cba89445495b");
         var repository = new StubAccessKeyRepository
         {
-            State = new AccessKeyState(keyId, null, null)
+            State = new AccessKeyState(KeyId, null, null, null)
         };
         var service = CreateService(repository);
 
         await Assert.ThrowsAsync<AccessKeyNotActivatedException>(() =>
-            service.ValidateActivatedKeyAsync(keyId));
+            service.ValidateActivatedKeyAsync(KeyId));
     }
 
     [Fact]
@@ -58,16 +62,102 @@ public class AccessKeyServiceTests
     {
         var repository = new StubAccessKeyRepository();
         var service = CreateService(repository);
-        var keyId = Guid.Parse("9a7b979b-a361-4170-aee7-cba89445495b");
 
         await service.RegisterSuccessfulLoginAsync(
-            keyId,
-            "  60000000  ",
+            KeyId,
+            "  student-001  ",
+            1001,
             "  Example   Student ");
 
-        Assert.Equal(keyId, repository.RegisteredKeyId);
-        Assert.Equal("60000000", repository.RegisteredStudentId);
+        Assert.Equal(KeyId, repository.RegisteredKeyId);
+        Assert.Equal("student-001", repository.RegisteredStudentId);
+        Assert.Equal(1001, repository.RegisteredLeb2UserId);
         Assert.Equal("Example Student", repository.RegisteredName);
+    }
+
+    [Fact]
+    public void EnsureStudentIdentity_AllowsNormalizedMatchingIdentity()
+    {
+        var service = CreateService(new StubAccessKeyRepository());
+
+        service.EnsureStudentIdentity(
+            new AccessKeyState(KeyId, UserId, "student-001", 1001),
+            " student-001 ");
+    }
+
+    [Fact]
+    public void EnsureStudentIdentity_AllowsUnassignedState()
+    {
+        var service = CreateService(new StubAccessKeyRepository());
+
+        service.EnsureStudentIdentity(
+            new AccessKeyState(KeyId, null, null, null),
+            "student-001");
+    }
+
+    [Fact]
+    public void EnsureStudentIdentity_RejectsAssignedStateWithoutStudent()
+    {
+        var service = CreateService(new StubAccessKeyRepository());
+
+        Assert.Throws<AccessKeyReauthenticationRequiredException>(() =>
+            service.EnsureStudentIdentity(
+                new AccessKeyState(KeyId, UserId, null, 1001),
+                "student-001"));
+    }
+
+    [Fact]
+    public void EnsureStudentIdentity_RejectsDifferentIdentity()
+    {
+        var service = CreateService(new StubAccessKeyRepository());
+
+        Assert.Throws<AccessKeyIdentityMismatchException>(() =>
+            service.EnsureStudentIdentity(
+                new AccessKeyState(KeyId, UserId, "student-001", 1001),
+                "student-002"));
+    }
+
+    [Fact]
+    public void EnsureLeb2UserIdentity_RejectsLegacyNullIdentity()
+    {
+        var service = CreateService(new StubAccessKeyRepository());
+
+        Assert.Throws<AccessKeyReauthenticationRequiredException>(() =>
+            service.EnsureLeb2UserIdentity(
+                new AccessKeyState(KeyId, UserId, "student-001", null),
+                1001));
+    }
+
+    [Fact]
+    public void EnsureLeb2IdentityInitialized_RejectsLegacyNullIdentity()
+    {
+        var service = CreateService(new StubAccessKeyRepository());
+
+        Assert.Throws<AccessKeyReauthenticationRequiredException>(() =>
+            service.EnsureLeb2IdentityInitialized(
+                new AccessKeyState(KeyId, UserId, "student-001", null)));
+    }
+
+    [Fact]
+    public void EnsureLeb2UserIdentity_RejectsUnassignedState()
+    {
+        var service = CreateService(new StubAccessKeyRepository());
+
+        Assert.Throws<AccessKeyReauthenticationRequiredException>(() =>
+            service.EnsureLeb2UserIdentity(
+                new AccessKeyState(KeyId, null, null, 1001),
+                1001));
+    }
+
+    [Fact]
+    public void EnsureLeb2UserIdentity_RejectsDifferentIdentity()
+    {
+        var service = CreateService(new StubAccessKeyRepository());
+
+        Assert.Throws<AccessKeyIdentityMismatchException>(() =>
+            service.EnsureLeb2UserIdentity(
+                new AccessKeyState(KeyId, UserId, "student-001", 1001),
+                1002));
     }
 
     private static AccessKeyService CreateService(StubAccessKeyRepository repository)
@@ -95,6 +185,8 @@ public class AccessKeyServiceTests
 
         public string? RegisteredStudentId { get; private set; }
 
+        public int? RegisteredLeb2UserId { get; private set; }
+
         public string? RegisteredName { get; private set; }
 
         public Task<AccessKeyState?> GetAccessKeyStateAsync(
@@ -107,11 +199,13 @@ public class AccessKeyServiceTests
         public Task UpsertUserAndClaimKeyAsync(
             Guid keyId,
             string studentId,
+            int leb2UserId,
             string name,
             CancellationToken cancellationToken = default)
         {
             RegisteredKeyId = keyId;
             RegisteredStudentId = studentId;
+            RegisteredLeb2UserId = leb2UserId;
             RegisteredName = name;
             return Task.CompletedTask;
         }

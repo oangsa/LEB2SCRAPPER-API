@@ -1,4 +1,5 @@
 using LEB2SCRAPPER.Contracts.Repository.Core;
+using LEB2SCRAPPER.Entity.Models.AccessKey;
 using LEB2SCRAPPER.Entity.Models.Authentication;
 using LEB2SCRAPPER.Entity.Models.Users;
 using LEB2SCRAPPER.Service.Contracts.Master;
@@ -14,8 +15,14 @@ public class UserService(
 
     public async Task<string?> GetCookieAsync(
         Credentials credentials,
+        AccessKeyState accessKeyState,
         CancellationToken cancellationToken = default)
     {
+        accessKeyService.EnsureStudentIdentity(
+            accessKeyState,
+            credentials.Username);
+        accessKeyService.EnsureLeb2IdentityInitialized(accessKeyState);
+
         var cookie = await _repositoryManager.ScrapingRepository.GetCookieAsync(
             credentials,
             cancellationToken);
@@ -25,9 +32,13 @@ public class UserService(
 
     public async Task<User?> GetUserByCredentialsAsync(
         Credentials credentials,
-        Guid accessKeyId,
+        AccessKeyState accessKeyState,
         CancellationToken cancellationToken = default)
     {
+        accessKeyService.EnsureStudentIdentity(
+            accessKeyState,
+            credentials.Username);
+
         var user = await _repositoryManager.UserRepository.GetUserByCredentialsAsync(
             credentials,
             cancellationToken);
@@ -51,13 +62,14 @@ public class UserService(
                     {
                         user.NameThai,
                         user.SurnameThai
-                    }
-                    .Where(value => !string.IsNullOrWhiteSpace(value)));
+                }
+                .Where(value => !string.IsNullOrWhiteSpace(value)));
             }
 
             await accessKeyService.RegisterSuccessfulLoginAsync(
-                accessKeyId,
+                accessKeyState.KeyId,
                 credentials.Username.Trim(),
+                user.Id,
                 name,
                 cancellationToken);
         }

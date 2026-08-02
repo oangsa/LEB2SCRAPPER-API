@@ -2,6 +2,7 @@ using System.ComponentModel.DataAnnotations;
 using LEB2SCRAPPER.Presentation.Filters;
 using LEB2SCRAPPER.Entity.Models.Activity;
 using LEB2SCRAPPER.Entity.Models.Response;
+using LEB2SCRAPPER.Infrastructure.Contracts.AccessKey;
 using LEB2SCRAPPER.Infrastructure.Contracts.Authentication;
 using LEB2SCRAPPER.Service.Contracts.Core;
 using Microsoft.AspNetCore.Authorization;
@@ -18,13 +19,16 @@ public class ActivityController : ControllerBase
 {
     private const string UserIdHeaderName = "X-LEB2-USER-ID";
     private readonly IServiceManager _service;
+    private readonly AccessKeyRequestContext _accessKeyContext;
     private readonly ILeb2SessionCredential _sessionCredential;
 
     public ActivityController(
         IServiceManager service,
+        AccessKeyRequestContext accessKeyContext,
         ILeb2SessionCredential sessionCredential)
     {
         _service = service;
+        _accessKeyContext = accessKeyContext;
         _sessionCredential = sessionCredential;
     }
 
@@ -52,6 +56,10 @@ public class ActivityController : ControllerBase
         int userId,
         CancellationToken cancellationToken)
     {
+        _service.AccessKeyService.EnsureLeb2UserIdentity(
+            _accessKeyContext.Current!,
+            userId);
+
         var activities = await _service.ActivityService.GetActivitiesAsync(
             userId,
             semesterId,
@@ -82,6 +90,10 @@ public class ActivityController : ControllerBase
         int userId,
         CancellationToken cancellationToken)
     {
+        _service.AccessKeyService.EnsureLeb2UserIdentity(
+            _accessKeyContext.Current!,
+            userId);
+
         var activities = await _service.ActivityService.GetActivitiesBySemesterAsync(
             userId,
             semesterId,
@@ -111,6 +123,10 @@ public class ActivityController : ControllerBase
         int userId,
         CancellationToken cancellationToken)
     {
+        _service.AccessKeyService.EnsureLeb2UserIdentity(
+            _accessKeyContext.Current!,
+            userId);
+
         var snapshot = await _service.ActivityService.GetSemesterSnapshotAsync(
             userId,
             semesterId,

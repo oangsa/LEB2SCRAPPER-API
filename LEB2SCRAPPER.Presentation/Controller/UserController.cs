@@ -31,6 +31,7 @@ namespace LEB2SCRAPPER.Presentation.Controller
         [ProducesResponseType(typeof(ErrorResponse), StatusCodes.Status401Unauthorized)]
         [ProducesResponseType(typeof(ErrorResponse), StatusCodes.Status403Forbidden)]
         [ProducesResponseType(typeof(ErrorResponse), StatusCodes.Status404NotFound)]
+        [ProducesResponseType(typeof(ErrorResponse), StatusCodes.Status409Conflict)]
         [ProducesResponseType(typeof(ErrorResponse), StatusCodes.Status503ServiceUnavailable)]
         [ProducesResponseType(StatusCodes.Status500InternalServerError)]
         public async Task<IActionResult> Login(
@@ -39,7 +40,7 @@ namespace LEB2SCRAPPER.Presentation.Controller
         {
             var user = await _service.UserService.GetUserByCredentialsAsync(
                 credentials,
-                _accessKeyContext.Current!.KeyId,
+                _accessKeyContext.Current!,
                 cancellationToken);
 
             if (user == null)
@@ -79,6 +80,7 @@ namespace LEB2SCRAPPER.Presentation.Controller
         {
             var cookie = await _service.UserService.GetCookieAsync(
                 credentials,
+                _accessKeyContext.Current!,
                 cancellationToken);
 
             if (string.IsNullOrEmpty(cookie))
