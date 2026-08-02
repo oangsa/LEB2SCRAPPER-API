@@ -1,4 +1,5 @@
 using LEB2SCRAPPER.Authentication;
+using LEB2SCRAPPER.Configuration;
 using LEB2SCRAPPER.Contracts.Repository;
 using LEB2SCRAPPER.Contracts.Repository.Core;
 using LEB2SCRAPPER.Entity.Models.Response;
@@ -6,6 +7,7 @@ using LEB2SCRAPPER.Infrastructure.Alerting;
 using LEB2SCRAPPER.Infrastructure.Contracts.AccessKey;
 using LEB2SCRAPPER.Infrastructure.Contracts.Alerting;
 using LEB2SCRAPPER.Infrastructure.Contracts.Authentication;
+using LEB2SCRAPPER.Infrastructure.Contracts.Compatibility;
 using LEB2SCRAPPER.Infrastructure.Contracts.HttpService;
 using LEB2SCRAPPER.Infrastructure.Contracts.Outbound;
 using LEB2SCRAPPER.Infrastructure.HttpService;
@@ -24,10 +26,42 @@ using LEB2SCRAPPER.Extensions;
 using LEB2SCRAPPER.Swagger;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Mvc;
+using Asp.Versioning;
 using Microsoft.OpenApi.Models;
 using Npgsql;
 
 var builder = WebApplication.CreateBuilder(args);
+
+var apiVersioningOptions = new LEB2SCRAPPER.Configuration.ApiVersioningOptions();
+builder.Configuration
+    .GetSection("ApiVersioning")
+    .Bind(apiVersioningOptions);
+
+var deviceBindingOptions = new DeviceBindingOptions();
+builder.Configuration
+    .GetSection("DeviceBinding")
+    .Bind(deviceBindingOptions);
+
+if (deviceBindingOptions.Enabled
+    && string.IsNullOrWhiteSpace(deviceBindingOptions.HmacSecret))
+{
+    throw new InvalidOperationException(
+        "DeviceBinding:HmacSecret is required when device binding is enabled.");
+}
+
+if (deviceBindingOptions.EnforcementEnabled
+    && !deviceBindingOptions.Enabled)
+{
+    throw new InvalidOperationException(
+        "DeviceBinding:Enabled must be true when enforcement is enabled.");
+}
+
+var clientCompatibilityOptions = new ClientCompatibilityOptions();
+builder.Configuration
+    .GetSection("ClientCompatibility")
+    .Bind(clientCompatibilityOptions);
+var clientCompatibilityConfiguration =
+    ClientCompatibilityConfiguration.Create(clientCompatibilityOptions);
 
 const string connectionStringName = "Production";
 const string connectionStringConfigurationKey = "ConnectionStrings:Production";
@@ -102,6 +136,19 @@ builder.Services
         };
     });
 
+builder.Services
+    .AddApiVersioning(options =>
+    {
+        options.DefaultApiVersion = new ApiVersion(1, 0);
+        options.AssumeDefaultVersionWhenUnspecified = true;
+        options.ReportApiVersions = true;
+    })
+    .AddApiExplorer(options =>
+    {
+        options.GroupNameFormat = "'v'VVV";
+        options.SubstituteApiVersionInUrl = true;
+    });
+
 builder.Services.AddScoped<ICoreAdapterManager, CoreAdapterManager>();
 builder.Services.AddScoped<IServiceManager, ServiceManager>();
 builder.Services.AddScoped<IRepositoryManager, RepositoryManager>();
@@ -109,6 +156,11 @@ builder.Services.AddScoped<IAccessKeyRepository>(
     _ => new AccessKeyRepository(databaseConnectionString));
 builder.Services.AddScoped<IAccessKeyService, AccessKeyService>();
 builder.Services.AddScoped<AccessKeyRequestContext>();
+builder.Services.AddScoped<DeviceBindingRequestContext>();
+builder.Services.AddSingleton(apiVersioningOptions);
+builder.Services.AddSingleton(deviceBindingOptions);
+builder.Services.AddSingleton(clientCompatibilityOptions);
+builder.Services.AddSingleton(clientCompatibilityConfiguration);
 
 var outboundRequestGateOptions = new OutboundRequestGateOptions();
 builder.Configuration
@@ -176,6 +228,16 @@ builder.Services.AddCors(options =>
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(options =>
 {
+    options.SwaggerDoc("v1", new OpenApiInfo
+    {
+        Title = "LEB2SCRAPPER API",
+        Version = "v1"
+    });
+    options.DocInclusionPredicate(
+        (_, apiDescription) =>
+            apiDescription.RelativePath?.StartsWith(
+                "api/v1/",
+                StringComparison.OrdinalIgnoreCase) == true);
     options.AddSecurityDefinition(
         Leb2BearerDefaults.AuthenticationScheme,
         new OpenApiSecurityScheme
@@ -203,10 +265,19 @@ var app = builder.Build();
 // Configure the HTTP request pipeline.
 app.UseGlobalExceptionMiddleware();
 
+app.UseRouting();
+app.UseLegacyRouteCompatibility();
+app.UseClientCompatibility();
+
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
-    app.UseSwaggerUI();
+    app.UseSwaggerUI(options =>
+    {
+        options.SwaggerEndpoint(
+            "/swagger/v1/swagger.json",
+            "LEB2SCRAPPER API v1");
+    });
 }
 
 app.UseHttpsRedirection();

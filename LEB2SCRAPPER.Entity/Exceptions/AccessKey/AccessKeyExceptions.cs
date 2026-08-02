@@ -68,3 +68,35 @@ public sealed class AccessKeyDatabaseException : Exception
 
     public bool IsTransient { get; }
 }
+
+public sealed class DeviceIdRequiredException : Exception
+{
+    public DeviceIdRequiredException()
+        : base("A device ID is required.")
+    {
+    }
+}
+
+public sealed class DeviceIdInvalidException : Exception
+{
+    public DeviceIdInvalidException()
+        : base("The device ID is invalid.")
+    {
+    }
+}
+
+public sealed class DeviceBindingRequiredException : Exception
+{
+    public DeviceBindingRequiredException()
+        : base("The access key is not bound to this device.")
+    {
+    }
+}
+
+public sealed class DeviceBindingMismatchException : Exception
+{
+    public DeviceBindingMismatchException()
+        : base("The access key is bound to another device.")
+    {
+    }
+}

@@ -29,6 +29,10 @@ The workflow applies these settings on every deployment:
 | Maximum instances | `1` |
 | Runtime environment | `Production` |
 | Supabase connection | Secret Manager secret `leb2scrapper-api-supabase-connection`, latest enabled version |
+| Canonical API | `/api/v1` |
+| Legacy route aliases | Enabled during migration (`ApiVersioning__LegacyRoutesEnabled=true`) |
+| Client compatibility enforcement | Disabled during rollout (`ClientCompatibility__EnforcementEnabled=false`) |
+| Device binding persistence/enforcement | Disabled during rollout (`DeviceBinding__Enabled=false`, `DeviceBinding__EnforcementEnabled=false`) |
 
 The conservative memory and concurrency values account for requests that launch
 headless Chromium. Cloud Run request concurrency is the number of simultaneous HTTP
@@ -58,6 +62,29 @@ to read the Supabase connection string at instance startup.
 The workflow does not manage public access. A new service is private by default.
 After the first deployment, the project owner can make it public once, and later
 workflow runs preserve that setting.
+
+The workflow's migration-safe environment defaults are intentional: old APKs can
+continue using temporary unversioned aliases while a compatible client is released.
+Before enabling device binding, create a Secret Manager secret for the HMAC key and
+add it to the Cloud Run deployment as `DeviceBinding__HmacSecret`; never commit the
+secret or place it in a normal environment variable in source control. The backend
+refuses startup when device binding is enabled without that secret.
+
+For example, create it from a protected local file:
+
+```bash
+gcloud secrets create leb2scrapper-api-device-hmac \
+  --replication-policy="automatic" \
+  --project="$LEB2_GCP_PROJECT_ID"
+
+gcloud secrets versions add leb2scrapper-api-device-hmac \
+  --data-file="/secure/path/device-hmac-secret.txt" \
+  --project="$LEB2_GCP_PROJECT_ID"
+```
+
+Then add `DeviceBinding__HmacSecret=leb2scrapper-api-device-hmac:latest` to the
+Cloud Run `--update-secrets` list and set `DeviceBinding__Enabled=true` before
+turning on enforcement.
 
 ## GitHub repository variables
 
@@ -112,6 +139,157 @@ Postgres connection guide](https://supabase.com/docs/guides/database/connecting-
 Store this value in Secret Manager. GitHub Actions variables are visible configuration;
 GitHub Actions secrets are suitable for deployment-only secrets, but Cloud Run still
 needs the value at runtime. The workflow therefore references Secret Manager instead.
+
+## One-time Supabase schema
+
+Apply this migration manually to the current production schema before deploying
+enforcement. The application intentionally has no migrations or automatic table
+creation:
+
+```sql
+BEGIN;
+
+-- Preserve permanent user records, but make key-owned assignments disappear
+-- automatically when an operator revokes a key.
+
+ALTER TABLE public.user_keys
+DROP CONSTRAINT fk_user_keys_key;
+
+ALTER TABLE public.user_keys
+ADD CONSTRAINT fk_user_keys_key
+FOREIGN KEY (key_id)
+REFERENCES public.keys(id)
+ON DELETE CASCADE;
+
+
+ALTER TABLE public.key_device_bindings
+DROP CONSTRAINT fk_key_device_bindings_key;
+
+ALTER TABLE public.key_device_bindings
+ADD CONSTRAINT fk_key_device_bindings_key
+FOREIGN KEY (key_id)
+REFERENCES public.keys(id)
+ON DELETE CASCADE;
+
+
+-- Device binding invariant:
+-- one access key may have at most one active device.
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_key_device_bindings_active_key
+ON public.key_device_bindings (key_id)
+WHERE unbound_at IS NULL;
+
+
+-- Useful lookup for logout/binding checks.
+
+CREATE INDEX IF NOT EXISTS ix_key_device_bindings_key_device_hash
+ON public.key_device_bindings (key_id, device_id_hash);
+
+
+-- Existing access-key identity invariant.
+-- Keep/create this if production does not already have it.
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_users_leb2_user_id
+ON public.users (leb2_user_id)
+WHERE leb2_user_id IS NOT NULL;
+
+-- Normalize the existing user_keys(key_id) unique constraint name without
+-- creating a redundant second unique constraint.
+
+DO $$
+DECLARE
+    existing_constraint text;
+BEGIN
+    SELECT c.conname
+    INTO existing_constraint
+    FROM pg_constraint c
+    WHERE c.conrelid = 'public.user_keys'::regclass
+      AND c.contype = 'u'
+      AND pg_get_constraintdef(c.oid) = 'UNIQUE (key_id)'
+    LIMIT 1;
+
+    IF existing_constraint IS NULL THEN
+        ALTER TABLE public.user_keys
+        ADD CONSTRAINT uq_user_keys_key UNIQUE (key_id);
+    ELSIF existing_constraint <> 'uq_user_keys_key' THEN
+        EXECUTE format(
+            'ALTER TABLE public.user_keys RENAME CONSTRAINT %I TO uq_user_keys_key',
+            existing_constraint
+        );
+    END IF;
+END
+$$;
+
+COMMIT;
+```
+
+The migration intentionally does not add `ON DELETE CASCADE` from `users` to
+`user_keys`. Revoke a key with one statement; PostgreSQL removes the key,
+`user_keys` assignment, and device-binding history while preserving the user:
+
+```sql
+DELETE FROM public.keys
+WHERE id = '<key-id>';
+```
+
+An operator device reset marks only the active binding unbound:
+
+```sql
+UPDATE key_device_bindings
+SET unbound_at = CURRENT_TIMESTAMP,
+    unbound_reason = 'operator-reset',
+    updated_by = 'operator',
+    updated_at = CURRENT_TIMESTAMP
+WHERE key_id = '<key-uuid>'
+  AND unbound_at IS NULL;
+```
+
+Account ownership in `user_keys` is never removed by logout or reset.
+
+Verify the production objects before enabling enforcement:
+
+```sql
+SELECT
+    conname,
+    pg_get_constraintdef(oid)
+FROM pg_constraint
+WHERE conrelid IN (
+    'public.user_keys'::regclass,
+    'public.key_device_bindings'::regclass
+)
+ORDER BY conrelid::regclass::text, conname;
+```
+
+```sql
+SELECT
+    indexname,
+    indexdef
+FROM pg_indexes
+WHERE schemaname = 'public'
+  AND tablename IN (
+      'users',
+      'user_keys',
+      'key_device_bindings'
+  )
+ORDER BY tablename, indexname;
+```
+
+The result must include `uq_user_keys_key`, `uq_users_leb2_user_id`,
+`uq_key_device_bindings_active_key`, and both key foreign keys with `ON DELETE CASCADE`.
+
+## Versioned health and rollout
+
+Use `GET /api/v1/meta` for anonymous client bootstrap and
+`GET /api/v1/health/leb2` for monitoring. The temporary `/health/leb2` alias remains
+available only while `ApiVersioning__LegacyRoutesEnabled=true`; migrate monitors
+before disabling aliases. Roll out in this order:
+
+1. Apply the Supabase schema and create the HMAC secret.
+2. Deploy with legacy aliases on and both compatibility enforcement flags off.
+3. Release and verify the frontend using `/api/v1`, `X-Device-ID`,
+   `X-Client-Version`, `/api/v1/meta`, and `/api/v1/User/logout`.
+4. Enable client compatibility enforcement, then device-binding enforcement.
+5. After the migration period, set `ApiVersioning__LegacyRoutesEnabled=false`.
 
 ## One-time Google Cloud setup
 
@@ -367,10 +545,10 @@ export LEB2_CLOUD_RUN_URL="$(
     --format="value(status.url)"
 )"
 
-curl "${LEB2_CLOUD_RUN_URL}/health/leb2"
+curl "${LEB2_CLOUD_RUN_URL}/api/v1/health/leb2"
 ```
 
-Making the service public exposes `/User/login` and `/User/cookie` to network
+Making the service public exposes `/api/v1/User/login` and `/api/v1/User/cookie` to network
 traffic without Cloud Run IAM. They still require a valid application `access-key`
-(`/User/cookie` requires an activated one), but review application-level abuse
+(`/api/v1/User/cookie` requires an activated one), but review application-level abuse
 controls before advertising the URL broadly.

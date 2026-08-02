@@ -6,10 +6,13 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Authorization;
 using LEB2SCRAPPER.Service.Contracts.Core;
+using Asp.Versioning;
 
 
 namespace LEB2SCRAPPER.Presentation.Controller
 {
+    [ApiVersion("1.0")]
+    [Route("api/v{version:apiVersion}/[controller]")]
     [Route("[controller]")]
     [ApiController]
     public class SemesterController : ControllerBase

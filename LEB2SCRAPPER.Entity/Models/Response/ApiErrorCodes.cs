@@ -11,7 +11,14 @@ public static class ApiErrorCodes
     public const string AccessKeyRequired = "ACCESS_KEY_REQUIRED";
     public const string AccessKeyStoreUnavailable = "ACCESS_KEY_STORE_UNAVAILABLE";
     public const string AuthenticationRequired = "AUTHENTICATION_REQUIRED";
+    public const string ClientUpdateRequired = "CLIENT_UPDATE_REQUIRED";
+    public const string ClientVersionInvalid = "CLIENT_VERSION_INVALID";
+    public const string ClientVersionRequired = "CLIENT_VERSION_REQUIRED";
     public const string ClientThrottleActive = "CLIENT_THROTTLE_ACTIVE";
+    public const string DeviceBindingMismatch = "DEVICE_BINDING_MISMATCH";
+    public const string DeviceBindingRequired = "DEVICE_BINDING_REQUIRED";
+    public const string DeviceIdInvalid = "DEVICE_ID_INVALID";
+    public const string DeviceIdRequired = "DEVICE_ID_REQUIRED";
     public const string InvalidRequest = "INVALID_REQUEST";
     public const string Leb2Unavailable = "LEB2_UNAVAILABLE";
     public const string RequestBackoffActive = "REQUEST_BACKOFF_ACTIVE";

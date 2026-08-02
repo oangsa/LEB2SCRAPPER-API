@@ -57,6 +57,10 @@ jobs:
           env_vars: |-
             ASPNETCORE_ENVIRONMENT=Production
             ASPNETCORE_FORWARDEDHEADERS_ENABLED=true
+            ApiVersioning__LegacyRoutesEnabled=true
+            ClientCompatibility__EnforcementEnabled=false
+            DeviceBinding__Enabled=false
+            DeviceBinding__EnforcementEnabled=false
           flags: >-
             --port=8080
             --cpu=1

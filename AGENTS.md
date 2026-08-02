@@ -35,6 +35,12 @@ Application startup begins in `LEB2SCRAPPER/Program.cs`:
 5. OpenAPI, Swagger, permissive CORS, and the global exception middleware are configured.
 6. Controller routes are mapped and the application starts.
 
+The canonical HTTP contract is URL-versioned under `/api/v1`. During migration,
+`ApiVersioning__LegacyRoutesEnabled=true` (the default) keeps deprecated unversioned
+aliases available; set it to `false` after clients and monitors migrate. API v1
+versioning is separate from frontend `X-Client-Version` compatibility and from the
+temporary `X-Device-ID` binding.
+
 Swagger UI is exposed in the Development environment at:
 
 - `/swagger`
@@ -319,51 +325,70 @@ The default container runs as Production, so its Swagger UI is not enabled unles
 
 ### Current routes
 
-- `POST /User/login`
+- `POST /api/v1/User/login`
   - Requires a provisioned `access-key`, accepts LEB2 credentials, upserts the local
     student, claims an unassigned key, and returns the mapped user profile.
-- `POST /User/cookie`
+- `POST /api/v1/User/cookie`
   - Requires an assigned `access-key` with an initialized `leb2_user_id`, accepts
     matching LEB2 credentials, and returns a scraped LEB2 session cookie. Legacy
-    assigned users must complete `/User/login` once after the schema change. It
+    assigned users must complete `/api/v1/User/login` once after the schema change. It
     does not assign keys.
-- `GET /Semester`
+- `POST /api/v1/User/logout`
+  - Requires an assigned `access-key` and removes only the temporary matching device
+    binding when device binding is enabled. It never removes account ownership.
+- `GET /api/v1/Semester`
   - Requires an assigned `access-key` and the LEB2 session value in `Authorization`.
   - Returns `{ id, name }` objects: `id` is the internal LEB2 semester ID used by
     class/activity routes, and `name` is the rendered visible semester label.
-- `GET /Class/{id}`
+- `GET /api/v1/Class/{id}`
   - Requires an assigned `access-key` and the LEB2 session value in `Authorization`.
   - `id` is the semester ID.
-- `GET /Activity/{semesterId}/{classId}`
+- `GET /api/v1/Activity/{semesterId}/{classId}`
   - Returns activities for one class.
   - Verifies that `classId` belongs to `semesterId`; otherwise returns the normal
     `404 RESOURCE_NOT_FOUND` contract.
   - Requires `X-LEB2-USER-ID` to match the owner's stored `leb2_user_id`.
   - Requires an assigned `access-key`.
   - Requires the LEB2 session value as a bearer credential in the `Authorization` header.
-- `GET /Activity/{semesterId}`
+- `GET /api/v1/Activity/{semesterId}`
   - Returns activities for every class in one semester.
   - Requires `X-LEB2-USER-ID` to match the owner's stored `leb2_user_id`.
   - Requires an assigned `access-key`.
   - Requires the LEB2 session value as a bearer credential in the `Authorization` header.
-- `GET /Activity/{semesterId}/snapshot`
+- `GET /api/v1/Activity/{semesterId}/snapshot`
   - Requires an assigned `access-key`, a stored `leb2_user_id`, and a matching
     `X-LEB2-USER-ID` assertion with the LEB2 session value in `Authorization`.
-- `GET /health/leb2`
+- `GET /api/v1/meta`
+  - Anonymous bootstrap metadata. It does not access Supabase, device binding,
+    client-version enforcement, LEB2, or Selenium.
+- `GET /api/v1/health/leb2`
   - Returns `200 OK` with `Cache-Control: no-store`.
   - Reports process-local observed request-gate/backoff state; it does not contact
     LEB2 or prove current upstream reachability.
+
+When `DeviceBinding:Enabled=true`, protected requests carry a stable
+`X-Device-ID`; the server persists only an HMAC-SHA256 fingerprint. Optional metadata
+headers are `X-Device-Name`, `X-Device-Platform`, and `X-Device-OS-Version`.
+`X-Client-Version` is the authoritative frontend-build version and populates stored
+device `app_version`. `POST /api/v1/User/logout` removes only the temporary active
+device binding and never removes `user_keys` ownership; a retry after unbinding returns
+`204`, while another active device receives `DEVICE_BINDING_MISMATCH`. `/api/v1/meta`
+and the health route remain exempt.
+
+After the documented production migration, deleting a row from `public.keys` cascades
+`user_keys` and `key_device_bindings` history while preserving the `users` row. The
+application never runs this migration automatically.
 
 The current `Authorization` header is passed through as an LEB2 session/cookie value. It is not a JWT authentication implementation and should not be documented or treated as one.
 
 ### Typical API flow
 
 1. Manually insert a UUID into `keys` in Supabase and give it to the user out of band.
-2. Call `POST /User/login` with that `access-key` and valid LEB2 credentials. The
+2. Call `POST /api/v1/User/login` with that `access-key` and valid LEB2 credentials. The
    successful LEB2 `User.Id` becomes `users.leb2_user_id`.
 3. The successful login upserts `users` by trimmed username and claims the key in
    `user_keys`; invalid LEB2 credentials do not create either record.
-4. Call `POST /User/cookie` with the assigned `access-key` to obtain an LEB2 session cookie.
+4. Call `POST /api/v1/User/cookie` with the assigned `access-key` to obtain an LEB2 session cookie.
 5. Treat the returned cookie as a secret and send it with the `access-key` in data requests.
 6. Use a semester ID to request classes.
 7. Send the server-bound numeric ID in `X-LEB2-USER-ID` and use the semester ID,
@@ -392,7 +417,7 @@ Some existing project references are broader than this ideal. Do not use those b
 
 ### Request lifecycle example
 
-Class activity request (`GET /Activity/{semesterId}/{classId}`):
+Class activity request (`GET /api/v1/Activity/{semesterId}/{classId}`):
 
 1. `AccessKeyAuthorizationFilter` validates the `access-key` against Supabase and
    stores request-scoped key context.
