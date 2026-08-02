@@ -84,6 +84,25 @@ string, or normal request body.
 The owner provisions keys directly in Supabase. The API has no key-generation or
 key-management endpoint.
 
+### Supabase schema prerequisite
+
+The application does not run migrations. Before merging or deploying this version,
+manually apply and verify this exact SQL:
+
+```sql
+ALTER TABLE users
+ADD COLUMN leb2_user_id INTEGER;
+
+CREATE UNIQUE INDEX uq_users_leb2_user_id
+ON users (leb2_user_id)
+WHERE leb2_user_id IS NOT NULL;
+```
+
+In production, `user_keys` ownership uniqueness is enforced by constraint
+`uq_user_keys_key`. Apply and verify the schema first, then merge; the main deployment
+deploys Cloud Run. This prerequisite adds no HTTP/API behavior, and the constraint name
+is not exposed to API clients.
+
 Example manual provisioning with a fake UUID:
 
 ```sql
