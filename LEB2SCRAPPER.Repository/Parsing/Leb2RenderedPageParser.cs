@@ -41,12 +41,7 @@ internal sealed class Leb2RenderedPageParser
             }
 
             candidateCount++;
-            var name = Regex.Replace(
-                    link.TextContent,
-                    @"\s+",
-                    " ",
-                    RegexOptions.CultureInvariant)
-                .Trim();
+            var name = NormalizeSemesterName(link.TextContent);
 
             if (!parsedIdCandidate.HasValue
                 || string.IsNullOrWhiteSpace(name))
@@ -93,9 +88,14 @@ internal sealed class Leb2RenderedPageParser
         return semesters;
     }
 
-    private static bool TryGetSemesterId(string href, out int? parsedId)
+    internal static bool TryGetSemesterId(string? href, out int? parsedId)
     {
         parsedId = null;
+
+        if (string.IsNullOrWhiteSpace(href))
+        {
+            return false;
+        }
 
         var fragmentIndex = href.IndexOf('#');
         var queryEnd = fragmentIndex >= 0 ? fragmentIndex : href.Length;
@@ -157,6 +157,23 @@ internal sealed class Leb2RenderedPageParser
         }
 
         return false;
+    }
+
+    internal static string NormalizeSemesterName(string? text)
+    {
+        return Regex.Replace(
+                text ?? string.Empty,
+                @"\s+",
+                " ",
+                RegexOptions.CultureInvariant)
+            .Trim();
+    }
+
+    internal static bool IsUsableSemesterLink(string? href, string? text)
+    {
+        return TryGetSemesterId(href, out var parsedId)
+            && parsedId.HasValue
+            && !string.IsNullOrWhiteSpace(NormalizeSemesterName(text));
     }
 
     public List<ClassInfo> ParseClasses(string pageSource)

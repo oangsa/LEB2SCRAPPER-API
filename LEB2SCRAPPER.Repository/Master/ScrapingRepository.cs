@@ -396,8 +396,11 @@ public class ScrapingRepository : IScrapingRepository
             await RunDriverOperationAsync(
                 () => wait.Until(d =>
                 {
-                    var links = d.FindElements(By.CssSelector("a[href*='semester_id=']"));
-                    return links.Count > 0;
+                    var links = d.FindElements(By.CssSelector("a[href]"));
+                    return links.Any(link =>
+                        Leb2RenderedPageParser.IsUsableSemesterLink(
+                            link.GetAttribute("href"),
+                            link.Text));
                 }),
                 cancellationToken);
         }

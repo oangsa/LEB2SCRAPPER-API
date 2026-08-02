@@ -413,11 +413,7 @@ Successful response — `200 OK`:
 ]
 ```
 
-If no semesters are found, the response is:
-
-```json
-[]
-```
+Missing or unrecognizable semester structure returns `502 SCRAPE_RESPONSE_CHANGED`.
 
 Relevant error responses:
 

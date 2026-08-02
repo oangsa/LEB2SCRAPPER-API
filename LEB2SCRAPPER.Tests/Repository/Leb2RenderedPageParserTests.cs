@@ -6,6 +6,48 @@ namespace LEB2SCRAPPER.Tests.Repository;
 
 public class Leb2RenderedPageParserTests
 {
+    [Theory]
+    [InlineData("/class?semester_id=46", true)]
+    [InlineData("/class?semester_id=46&tab=all", true)]
+    [InlineData("https://app.leb2.org/class?semester_id=46", true)]
+    [InlineData("/class?other_semester_id=46", false)]
+    [InlineData("/class?redirect=/foo?semester_id=46", false)]
+    [InlineData("/class#?semester_id=46", false)]
+    public void TryGetSemesterId_RequiresExactQueryParameter(
+        string href,
+        bool expected)
+    {
+        var recognized = Leb2RenderedPageParser.TryGetSemesterId(
+            href,
+            out var parsedId);
+
+        Assert.Equal(expected, recognized);
+
+        if (expected)
+        {
+            Assert.Equal(46, parsedId);
+        }
+        else
+        {
+            Assert.Null(parsedId);
+        }
+    }
+
+    [Theory]
+    [InlineData("/class?semester_id=46", "", false)]
+    [InlineData("/class?semester_id=46", "   \t\r\n", false)]
+    [InlineData("/class?semester_id=46", "  1/2026 \t", true)]
+    [InlineData("/class?other_semester_id=46", "1/2026", false)]
+    public void IsUsableSemesterLink_RequiresRecognizableIdAndName(
+        string href,
+        string text,
+        bool expected)
+    {
+        Assert.Equal(
+            expected,
+            Leb2RenderedPageParser.IsUsableSemesterLink(href, text));
+    }
+
     [Fact]
     public void ParseSemesters_MapsAbsoluteHrefAndVisibleName()
     {
