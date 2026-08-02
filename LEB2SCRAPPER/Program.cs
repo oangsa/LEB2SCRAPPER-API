@@ -33,6 +33,24 @@ const string connectionStringName = "Production";
 const string connectionStringConfigurationKey = "ConnectionStrings:Production";
 var databaseConnectionString = builder.Configuration.GetConnectionString(connectionStringName);
 
+if (!string.IsNullOrWhiteSpace(databaseConnectionString)
+    && Uri.TryCreate(databaseConnectionString, UriKind.Absolute, out var databaseConnectionUri)
+    && (string.Equals(databaseConnectionUri.Scheme, "postgres", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(databaseConnectionUri.Scheme, "postgresql", StringComparison.OrdinalIgnoreCase)))
+{
+    var userInfo = databaseConnectionUri.UserInfo.Split(':', 2);
+
+    databaseConnectionString = new NpgsqlConnectionStringBuilder
+    {
+        Host = databaseConnectionUri.Host,
+        Port = databaseConnectionUri.IsDefaultPort ? 5432 : databaseConnectionUri.Port,
+        Database = Uri.UnescapeDataString(databaseConnectionUri.AbsolutePath.TrimStart('/')),
+        Username = Uri.UnescapeDataString(userInfo[0]),
+        Password = userInfo.Length == 2 ? Uri.UnescapeDataString(userInfo[1]) : string.Empty,
+        SslMode = SslMode.Require
+    }.ConnectionString;
+}
+
 if (builder.Environment.IsProduction()
     && string.IsNullOrWhiteSpace(databaseConnectionString))
 {
