@@ -1,5 +1,33 @@
 # Authentication and scrape resilience
 
+## API v1 and compatibility gates
+
+The canonical HTTP contract is URL-versioned at `/api/v1`; every application
+controller explicitly serves API v1. `ApiVersioning:LegacyRoutesEnabled` (environment
+form `ApiVersioning__LegacyRoutesEnabled`) defaults to `true` during migration so
+deployed older APKs can use deprecated unversioned aliases. The aliases run through
+the same controller, middleware, filters, and services; they are not v0 and do not
+redirect. Set the flag to `false` after clients and monitoring move to `/api/v1` to
+make old paths return `404`.
+
+There is no v2 implementation. A future breaking HTTP contract must use `/api/v2`;
+frontend build compatibility remains a separate concern from API URL versioning.
+
+Middleware order for a routed request is:
+
+```text
+routing
+  -> legacy-route gate
+  -> client-version gate
+  -> access-key authorization
+  -> device-binding authorization
+  -> LEB2 session authorization
+  -> controller/service
+```
+
+`GET /api/v1/meta` and `GET /api/v1/health/leb2` are anonymous, cheap, and exempt
+from both compatibility gates so a client can bootstrap and monitor during rollout.
+
 ## Application access key
 
 The API keeps access authorization, LEB2 authentication, and LEB2 session state
@@ -41,22 +69,22 @@ transient failures.
 Key states:
 
 - A missing key is rejected everywhere.
-- A provisioned but unassigned key is accepted only by `/User/login`.
-- An assigned key is required by `/User/cookie` and all data routes.
+- A provisioned but unassigned key is accepted only by `/api/v1/User/login`.
+- An assigned key is required by `/api/v1/User/cookie` and all data routes.
 
 First-use flow:
 
 1. The owner inserts a UUID into `keys` directly in Supabase.
 2. The user receives that UUID out of band.
-3. The client calls `/User/login` with `access-key` and LEB2 credentials.
+3. The client calls `/api/v1/User/login` with `access-key` and LEB2 credentials.
 4. After successful LEB2 authentication, the backend upserts `users` by normalized login identifier, stores the authoritative `User.Id` in `users.leb2_user_id`, and claims the key in one PostgreSQL transaction.
-5. The client calls `/User/cookie` with the assigned key.
+5. The client calls `/api/v1/User/cookie` with the assigned key.
 6. Normal data requests send both `access-key` and the opaque LEB2 session cookie.
 
-`users.student_id` is the normalized `/User/login` username. `users.leb2_user_id`
-comes only from the successful LEB2 `/User/login` response; the client-supplied
+`users.student_id` is the normalized `/api/v1/User/login` username. `users.leb2_user_id`
+comes only from the successful LEB2 `/api/v1/User/login` response; the client-supplied
 `X-LEB2-USER-ID` is never persisted. Existing users with a null numeric identity
-populate it on their next successful `/User/login`; activity requests fail closed
+populate it on their next successful `/api/v1/User/login`; activity requests fail closed
 until then with `ACCESS_KEY_REAUTHENTICATION_REQUIRED`.
 
 `users.name` uses the
@@ -66,6 +94,90 @@ fallback. Audit fields use `leb2scrapper-api`.
 Deleting a `user_keys` row makes the key unassigned again. Deleting a `keys` row
 invalidates it and cascades its assignment under the supplied schema. The backend
 never moves a key from one user to another.
+
+## Temporary device binding
+
+Account ownership and device binding are different lifecycles:
+
+```text
+user --permanent--> access key --temporary, one active device--> device
+```
+
+When `DeviceBinding:Enabled=true`, the backend receives a stable app-generated
+`X-Device-ID`, computes `HMAC-SHA256(DeviceBinding:HmacSecret, device-id)`, and
+stores only the resulting fingerprint. Raw device IDs are never persisted or logged.
+This is a stable application identifier, not hardware attestation.
+
+Optional metadata headers are `X-Device-Name`, `X-Device-Platform`,
+`X-Device-OS-Version`, and `X-Device-App-Version`. They update the active binding
+when the same device logs in again. A first successful `/api/v1/User/login` binds the
+already successful account claim and device in one PostgreSQL transaction. Repeating
+the login on the same device is idempotent. A different active device gets
+`DEVICE_BINDING_MISMATCH`; a different LEB2 account still gets the existing permanent
+ownership error. Reinstall and APK update can reuse the binding if the app preserves
+the stable device ID.
+
+`POST /api/v1/User/logout` requires the assigned access key and, when enforcement is
+enabled, the matching `X-Device-ID`. It marks only that active binding unbound with a
+reason; it never removes `user_keys`, `users`, or the account relationship. A later
+device may then bind the still-owned key. An operator reset uses the same unbind
+operation with reason `operator-reset`.
+
+`DeviceBinding:EnforcementEnabled` controls request rejection separately from
+`DeviceBinding:Enabled`. During rollout, enable persistence first while enforcement
+is off. When enforcement is on, login may bind an unbound provisioned key, while
+cookie, logout, semester, class, and activity routes require the active matching
+device.
+
+Manual schema prerequisite (no migrations run by the application):
+
+```sql
+CREATE TABLE key_device_bindings (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    key_id UUID NOT NULL REFERENCES keys(id),
+    device_id_hash VARCHAR NOT NULL,
+    device_name VARCHAR,
+    platform VARCHAR,
+    os_version VARCHAR,
+    app_version VARCHAR,
+    bound_at TIMESTAMP WITHOUT TIME ZONE NOT NULL,
+    unbound_at TIMESTAMP WITHOUT TIME ZONE,
+    unbound_reason VARCHAR,
+    created_by VARCHAR NOT NULL,
+    updated_by VARCHAR NOT NULL,
+    created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE UNIQUE INDEX uq_key_device_bindings_active_key
+ON key_device_bindings (key_id)
+WHERE unbound_at IS NULL;
+```
+
+The repository locks the key row and the active binding in the same transaction;
+the partial unique index is the database backstop that permits at most one active
+device per key under concurrent requests.
+
+## Frontend client compatibility
+
+`X-Client-Version` identifies the frontend build, not the API contract. The anonymous
+`GET /api/v1/meta` response is:
+
+```json
+{
+  "apiVersion": 1,
+  "minimumClientVersion": "0.5.0",
+  "latestClientVersion": "0.5.0",
+  "downloadUrl": "https://github.com/oangsa/leb2-watch/releases/latest"
+}
+```
+
+With `ClientCompatibility:EnforcementEnabled=true`, versions are parsed and compared
+as semantic versions. A supported-v1 client below `minimumClientVersion` receives
+`426 CLIENT_UPDATE_REQUIRED`; a version newer than `latestClientVersion` is allowed.
+Missing or malformed values receive `400`. Rejection occurs before access-key,
+device, LEB2, Selenium, or service work. `/api/v1/meta`, `/api/v1/health/leb2`, and
+temporary anonymous aliases remain exempt.
 
 ## Supabase connection
 
@@ -112,11 +224,11 @@ have migrated.
 
 The following routes require this header in addition to an assigned `access-key`:
 
-- `GET /Semester`
-- `GET /Class/{id}`
-- `GET /Activity/{semesterId}/{classId}`
-- `GET /Activity/{semesterId}`
-- `GET /Activity/{semesterId}/snapshot`
+- `GET /api/v1/Semester`
+- `GET /api/v1/Class/{id}`
+- `GET /api/v1/Activity/{semesterId}/{classId}`
+- `GET /api/v1/Activity/{semesterId}`
+- `GET /api/v1/Activity/{semesterId}/snapshot`
 
 All activity routes also require a positive integer user ID in:
 
@@ -129,10 +241,10 @@ assertion. It must equal `users.leb2_user_id` for the activated access-key. The
 opaque `Authorization` value remains a separate LEB2 session credential and is not
 parsed to derive identity.
 
-`POST /User/login` requires only a provisioned access key because it performs the
-enrollment transaction. `POST /User/cookie` requires an assigned key with an
+`POST /api/v1/User/login` requires only a provisioned access key because it performs the
+enrollment transaction. `POST /api/v1/User/cookie` requires an assigned key with an
 initialized `users.leb2_user_id`; legacy assigned users must complete one successful
-`/User/login` first. It does not change local registration. LEB2 credentials are used
+`/api/v1/User/login` first. It does not change local registration. LEB2 credentials are used
 only for the outbound call in that request and are not persisted.
 
 ## Error contract
@@ -143,17 +255,23 @@ or scraper failures.
 | HTTP status | `responseCode` | Meaning |
 | --- | --- | --- |
 | `400` | `INVALID_REQUEST` | Request input failed validation. |
+| `400` | `DEVICE_ID_REQUIRED` | Device binding enforcement requires `X-Device-ID`. |
+| `400` | `DEVICE_ID_INVALID` | A device identifier or metadata value is invalid. |
+| `400` | `CLIENT_VERSION_REQUIRED` | Client compatibility enforcement requires `X-Client-Version`. |
 | `401` | `ACCESS_KEY_REQUIRED` | The `access-key` header is absent. |
 | `401` | `ACCESS_KEY_INVALID` | The access key is malformed or not provisioned. |
 | `401` | `AUTHENTICATION_REQUIRED` | Bearer header is absent or malformed. |
 | `401` | `SESSION_EXPIRED` | LEB2 rejected or redirected the supplied session. Discard the client-held cookie and reauthenticate. |
-| `403` | `ACCESS_KEY_NOT_ACTIVATED` | The key has not been claimed through `/User/login`. |
+| `403` | `ACCESS_KEY_NOT_ACTIVATED` | The key has not been claimed through `/api/v1/User/login`. |
 | `403` | `ACCESS_KEY_ALREADY_ASSIGNED` | The key is assigned to another account. |
 | `403` | `ACCESS_KEY_IDENTITY_MISMATCH` | The key cannot be used with the submitted student or LEB2 user ID. |
-| `403` | `ACCESS_KEY_REAUTHENTICATION_REQUIRED` | The local user needs one successful `/User/login` to initialize its LEB2 identity. |
+| `403` | `ACCESS_KEY_REAUTHENTICATION_REQUIRED` | The local user needs one successful `/api/v1/User/login` to initialize its LEB2 identity. |
+| `403` | `DEVICE_BINDING_REQUIRED` | The protected route has no active device binding. |
+| `403` | `DEVICE_BINDING_MISMATCH` | The supplied device is not the key's active device. |
 | `409` | `ACCESS_KEY_IDENTITY_CONFLICT` | Successful LEB2 authentication conflicts with an established local identity. |
 | `404` | `RESOURCE_NOT_FOUND` | The requested resource or class/semester relationship was not found. |
 | `408` | `LEB2_UNAVAILABLE` | The request timed out. |
+| `426` | `CLIENT_UPDATE_REQUIRED` | The supported v1 client is below the configured minimum version. |
 | `429` | `CLIENT_THROTTLE_ACTIVE` | This client already has the maximum number of active and queued LEB2 operations. The response includes `Retry-After: 1`. |
 | `500` | `UNEXPECTED_ERROR` | An unexpected server error occurred. |
 | `502` | `LEB2_UNAVAILABLE` | LEB2 rejected or could not complete the upstream request. |
@@ -196,19 +314,19 @@ gate, cache, or alert-correlation keys.
 
 ## Aggregate activities
 
-`GET /Activity/{semesterId}` discovers the semester's classes once, de-duplicates
+`GET /api/v1/Activity/{semesterId}` discovers the semester's classes once, de-duplicates
 their positive class IDs, and loads activities with maximum parallelism two. It
 returns a flat activity list ordered by class ID while preserving LEB2's order within
 each class. An empty list is returned when the semester contains no published
 classes.
 
-`GET /Activity/{semesterId}/{classId}` first discovers classes for the supplied
+`GET /api/v1/Activity/{semesterId}/{classId}` first discovers classes for the supplied
 semester through the existing structural scrape cache, then verifies that the class
 ID belongs to that semester before retrieving activities. A missing relationship
 returns `404 RESOURCE_NOT_FOUND`; class discovery failures use the existing error
 contract. The activity repository is not called when membership validation fails.
 
-`GET /Activity/{semesterId}/snapshot` uses the same class discovery and activity
+`GET /api/v1/Activity/{semesterId}/snapshot` uses the same class discovery and activity
 retrieval path as the flat semester route. It returns the semester ID and an
 ID-ordered class list containing each class name and activities. Classes with no
 activities remain in the successful response, and LEB2's ordering is preserved
@@ -261,7 +379,7 @@ scale-from-zero or Selenium-miss latency is included in the warm target.
 
 ## LEB2 dependency health
 
-`GET /health/leb2` is unauthenticated and always returns HTTP `200` with
+`GET /api/v1/health/leb2` is unauthenticated and always returns HTTP `200` with
 `Cache-Control: no-store`. It reports every fixed LEB2 dependency endpoint as
 `available` or `unavailable`, plus its active retry time and retry delay. The response
 includes `source: "local-observed-state"`. The overall status is `degraded` when any
@@ -290,6 +408,20 @@ the local access-key enrollment data described above. Horizontal scaling still
 requires distributed replacements for throttling, backoff, and caches, plus
 distributed incident correlation and, if health is aggregated, distributed health
 state. Otherwise each instance would have independent local state.
+
+## Rollout order
+
+1. Apply the `key_device_bindings` table and active-key unique index manually in
+   Supabase.
+2. Configure `DeviceBinding:HmacSecret` without enabling enforcement.
+3. Deploy with device enforcement and client compatibility enforcement off and
+   `ApiVersioning:LegacyRoutesEnabled=true`.
+4. Release the frontend using `/api/v1`, `X-Device-ID`, `X-Client-Version`,
+   `/api/v1/meta`, and `/api/v1/User/logout`.
+5. Verify the new client, then enable client-version enforcement.
+6. Enable device-binding enforcement.
+7. Migrate monitoring to `/api/v1/health/leb2`, then set
+   `ApiVersioning:LegacyRoutesEnabled=false` after the intended migration period.
 
 ## Email alert configuration
 

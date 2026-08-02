@@ -12,6 +12,9 @@ using LEB2SCRAPPER.Entity.Models.Response;
 using LEB2SCRAPPER.Entity.Models.Semester;
 using LEB2SCRAPPER.Entity.Models.Users;
 using LEB2SCRAPPER.Infrastructure.Contracts.Outbound;
+using LEB2SCRAPPER.Infrastructure.Contracts.AccessKey;
+using LEB2SCRAPPER.Infrastructure.Contracts.Compatibility;
+using LEB2SCRAPPER.Configuration;
 using LEB2SCRAPPER.Presentation.Filters;
 using LEB2SCRAPPER.Service.Contracts.Core;
 using LEB2SCRAPPER.Service.Contracts.Master;
@@ -32,6 +35,166 @@ public class ApiIntegrationTests
         Guid.Parse("00000000-0000-0000-0000-000000000001");
     private static readonly Guid FakeAssignedUserId =
         Guid.Parse("00000000-0000-0000-0000-000000000002");
+
+    [Fact]
+    public async Task CanonicalV1Meta_IsAnonymousAndReportsApiContract()
+    {
+        using var factory = CreateFactory(
+            new FakeActivityService(),
+            clientCompatibilityOptions: new ClientCompatibilityOptions
+            {
+                EnforcementEnabled = true
+            },
+            deviceBindingOptions: new DeviceBindingOptions
+            {
+                Enabled = true,
+                EnforcementEnabled = true,
+                HmacSecret = "test-secret"
+            });
+        using var client = factory.CreateClient();
+
+        var response = await client.GetAsync("/api/v1/meta");
+        var metadata = await response.Content.ReadFromJsonAsync<ApiMetadataResponse>();
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(1, metadata?.ApiVersion);
+        Assert.Equal("0.5.0", metadata?.MinimumClientVersion);
+        Assert.Equal("0.5.0", metadata?.LatestClientVersion);
+    }
+
+    [Fact]
+    public async Task UnsupportedV2_DoesNotInvokeApplicationService()
+    {
+        var semesterService = new FakeSemesterService
+        {
+            ThrowOnInvocation = true
+        };
+        using var factory = CreateFactory(
+            new FakeActivityService(),
+            semesterService: semesterService);
+        using var client = factory.CreateClient();
+
+        var response = await client.GetAsync("/api/v2/Semester");
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+        Assert.Equal(0, semesterService.InvocationCount);
+    }
+
+    [Theory]
+    [InlineData("/api/v1/Semester")]
+    [InlineData("/api/v1/Class/10")]
+    [InlineData("/api/v1/Activity/10")]
+    [InlineData("/api/v1/Activity/10/20")]
+    [InlineData("/api/v1/Activity/10/snapshot")]
+    public async Task CanonicalV1ProtectedRoutes_UseAccessKeyAuthorization(
+        string path)
+    {
+        using var factory = CreateFactory(new FakeActivityService());
+        using var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", "fake-session");
+
+        var response = await client.GetAsync(path);
+        var error = await response.Content.ReadFromJsonAsync<ErrorResponse>();
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        Assert.Equal(ApiErrorCodes.AccessKeyRequired, error?.ResponseCode);
+    }
+
+    [Theory]
+    [InlineData("/api/v1/User/login")]
+    [InlineData("/api/v1/User/cookie")]
+    [InlineData("/api/v1/User/logout")]
+    public async Task CanonicalV1PostRoutes_UseAccessKeyAuthorization(string path)
+    {
+        using var factory = CreateFactory(new FakeActivityService());
+        using var client = factory.CreateClient();
+
+        var response = await client.PostAsJsonAsync(
+            path,
+            new Credentials
+            {
+                Username = "fake-student",
+                Password = "fake-password"
+            });
+        var error = await response.Content.ReadFromJsonAsync<ErrorResponse>();
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        Assert.Equal(ApiErrorCodes.AccessKeyRequired, error?.ResponseCode);
+    }
+
+    [Fact]
+    public async Task LegacyRoutes_CanBeDisabledWithoutAffectingV1()
+    {
+        using var factory = CreateFactory(
+            new FakeActivityService(),
+            apiVersioningOptions: new ApiVersioningOptions
+            {
+                LegacyRoutesEnabled = false
+            });
+        using var client = factory.CreateClient();
+
+        var legacyResponse = await client.GetAsync("/Semester");
+        var legacyLoginResponse = await client.PostAsJsonAsync(
+            "/User/login",
+            new Credentials
+            {
+                Username = "fake-student",
+                Password = "fake-password"
+            });
+        var canonicalResponse = await client.GetAsync("/api/v1/Semester");
+
+        Assert.Equal(HttpStatusCode.NotFound, legacyResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, legacyLoginResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, canonicalResponse.StatusCode);
+    }
+
+    [Fact]
+    public async Task ClientCompatibility_BlocksOldV1ClientButExemptsMeta()
+    {
+        var activityService = new FakeActivityService();
+        using var factory = CreateFactory(
+            activityService,
+            clientCompatibilityOptions: new ClientCompatibilityOptions
+            {
+                EnforcementEnabled = true,
+                MinimumClientVersion = "0.5.0",
+                LatestClientVersion = "0.5.0",
+                DownloadUrl = "https://example.test/releases"
+            });
+        using var client = CreateAuthenticatedClient(factory);
+        client.DefaultRequestHeaders.Add("X-Client-Version", "0.4.9");
+
+        var protectedResponse = await client.GetAsync("/api/v1/Activity/10");
+        var metadataResponse = await client.GetAsync("/api/v1/meta");
+        var error = await protectedResponse.Content.ReadFromJsonAsync<ErrorResponse>();
+
+        Assert.Equal(HttpStatusCode.UpgradeRequired, protectedResponse.StatusCode);
+        Assert.Equal(ApiErrorCodes.ClientUpdateRequired, error?.ResponseCode);
+        Assert.Equal(HttpStatusCode.OK, metadataResponse.StatusCode);
+        Assert.Equal(0, activityService.InvocationCount);
+    }
+
+    [Fact]
+    public async Task ClientCompatibility_AllowsNewerClientVersion()
+    {
+        var activityService = new FakeActivityService();
+        using var factory = CreateFactory(
+            activityService,
+            clientCompatibilityOptions: new ClientCompatibilityOptions
+            {
+                EnforcementEnabled = true,
+                MinimumClientVersion = "0.5.0",
+                LatestClientVersion = "0.5.0"
+            });
+        using var client = CreateAuthenticatedClient(factory);
+        client.DefaultRequestHeaders.Add("X-Client-Version", "9.0.0");
+
+        var response = await client.GetAsync("/api/v1/Activity/10");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(1, activityService.InvocationCount);
+    }
 
     [Fact]
     public async Task ClassActivityRoute_PropagatesInputsAndReturnsFlatActivities()
@@ -124,8 +287,11 @@ public class ApiIntegrationTests
         Assert.Equal([20, 30], activities!.Select(activity => activity.ClassId));
     }
 
-    [Fact]
-    public async Task SemesterSnapshotRoute_PropagatesInputsAndReturnsNestedShape()
+    [Theory]
+    [InlineData("/Activity/10/snapshot")]
+    [InlineData("/api/v1/Activity/10/snapshot")]
+    public async Task SemesterSnapshotRoute_PropagatesInputsAndReturnsNestedShape(
+        string path)
     {
         var activityService = new FakeActivityService
         {
@@ -161,7 +327,7 @@ public class ApiIntegrationTests
         using var factory = CreateFactory(activityService);
         using var client = CreateAuthenticatedClient(factory);
 
-        var response = await client.GetAsync("/Activity/10/snapshot");
+        var response = await client.GetAsync(path);
         using var content = await response.Content.ReadFromJsonAsync<JsonDocument>();
         var root = content!.RootElement;
         var classes = root.GetProperty("classes");
@@ -227,8 +393,10 @@ public class ApiIntegrationTests
         Assert.Equal(ApiErrorCodes.AuthenticationRequired, error?.ResponseCode);
     }
 
-    [Fact]
-    public async Task SemesterRoute_ReturnsStructuredSemesterInfo()
+    [Theory]
+    [InlineData("/Semester")]
+    [InlineData("/api/v1/Semester")]
+    public async Task SemesterRoute_ReturnsStructuredSemesterInfo(string path)
     {
         var semesterService = new FakeSemesterService
         {
@@ -250,13 +418,42 @@ public class ApiIntegrationTests
             semesterService: semesterService);
         using var client = CreateAuthenticatedClient(factory);
 
-        var response = await client.GetAsync("/Semester");
+        var response = await client.GetAsync(path);
         var semesters = await response.Content.ReadFromJsonAsync<List<SemesterInfo>>();
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var semester = Assert.Single(semesters!);
         Assert.Equal(46, semester.Id);
         Assert.Equal("1/2026", semester.Name);
+    }
+
+    [Theory]
+    [InlineData("/Class/10")]
+    [InlineData("/api/v1/Class/10")]
+    public async Task ClassRoute_ReturnsClasses(string path)
+    {
+        var classService = new FakeClassService
+        {
+            GetHandler = (semesterId, token, _) =>
+            {
+                Assert.Equal(10, semesterId);
+                Assert.Equal("fake-session", token);
+                return Task.FromResult<List<ClassInfo>?>(
+                [
+                    new ClassInfo { Id = 20, Name = "Example Class" }
+                ]);
+            }
+        };
+        using var factory = CreateFactory(
+            new FakeActivityService(),
+            classService: classService);
+        using var client = CreateAuthenticatedClient(factory);
+
+        var response = await client.GetAsync(path);
+        var classes = await response.Content.ReadFromJsonAsync<List<ClassInfo>>();
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(20, Assert.Single(classes!).Id);
     }
 
     [Fact]
@@ -300,8 +497,11 @@ public class ApiIntegrationTests
         Assert.Equal(ApiErrorCodes.AccessKeyRequired, error?.ResponseCode);
     }
 
-    [Fact]
-    public async Task Login_WithProvisionedAccessKeyPreservesSuccessfulResponse()
+    [Theory]
+    [InlineData("/User/login")]
+    [InlineData("/api/v1/User/login")]
+    public async Task Login_WithProvisionedAccessKeyPreservesSuccessfulResponse(
+        string path)
     {
         var accessKeyId = FakeAccessKeyId;
         var userService = new FakeUserService
@@ -330,7 +530,7 @@ public class ApiIntegrationTests
             accessKeyId.ToString());
 
         var response = await client.PostAsJsonAsync(
-            "/User/login",
+            path,
             new Credentials
             {
                 Username = "fake-student",
@@ -745,6 +945,18 @@ public class ApiIntegrationTests
     }
 
     [Fact]
+    public async Task CanonicalHealthEndpoint_IsAnonymous()
+    {
+        using var factory = CreateFactory(new FakeActivityService());
+        using var client = factory.CreateClient();
+
+        var response = await client.GetAsync("/api/v1/health/leb2");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("no-store", response.Headers.CacheControl?.ToString());
+    }
+
+    [Fact]
     public async Task HealthEndpoint_IsHealthyWhenNoEndpointHasActiveBackoff()
     {
         var observedAt = new DateTimeOffset(
@@ -788,10 +1000,13 @@ public class ApiIntegrationTests
 
         using var swagger = await client.GetFromJsonAsync<JsonDocument>(
             "/swagger/v1/swagger.json");
-        var paths = swagger!.RootElement.GetProperty("paths");
-        var classPath = paths.GetProperty("/Activity/{semesterId}/{classId}");
-        var semesterPath = paths.GetProperty("/Activity/{semesterId}");
-        var snapshotPath = paths.GetProperty("/Activity/{semesterId}/snapshot");
+        var info = swagger!.RootElement.GetProperty("info");
+        Assert.Equal("LEB2SCRAPPER API", info.GetProperty("title").GetString());
+        Assert.Equal("v1", info.GetProperty("version").GetString());
+        var paths = swagger.RootElement.GetProperty("paths");
+        var classPath = paths.GetProperty("/api/v1/Activity/{semesterId}/{classId}");
+        var semesterPath = paths.GetProperty("/api/v1/Activity/{semesterId}");
+        var snapshotPath = paths.GetProperty("/api/v1/Activity/{semesterId}/snapshot");
 
         AssertActivityOperation(classPath.GetProperty("get"));
         Assert.Contains(
@@ -805,12 +1020,13 @@ public class ApiIntegrationTests
         AssertActivityOperation(snapshotPath.GetProperty("get"));
         Assert.False(classPath.TryGetProperty("post", out _));
         Assert.False(semesterPath.TryGetProperty("post", out _));
-        Assert.False(paths.TryGetProperty("/Activity", out _));
-        Assert.False(paths.TryGetProperty("/Activity/all", out _));
-        Assert.True(paths.GetProperty("/health/leb2").TryGetProperty("get", out _));
+        Assert.False(paths.TryGetProperty("/api/v1/Activity", out _));
+        Assert.False(paths.TryGetProperty("/api/v1/Activity/all", out _));
+        Assert.False(paths.TryGetProperty("/User/login", out _));
+        Assert.True(paths.GetProperty("/api/v1/health/leb2").TryGetProperty("get", out _));
 
         var classOperation = paths
-            .GetProperty("/Class/{id}")
+            .GetProperty("/api/v1/Class/{id}")
             .GetProperty("get");
         Assert.DoesNotContain(
             classOperation
@@ -830,15 +1046,15 @@ public class ApiIntegrationTests
         var root = swagger!.RootElement;
         var paths = root.GetProperty("paths");
         var loginSecurity = paths
-            .GetProperty("/User/login")
+            .GetProperty("/api/v1/User/login")
             .GetProperty("post")
             .GetProperty("security")[0];
         var cookieSecurity = paths
-            .GetProperty("/User/cookie")
+            .GetProperty("/api/v1/User/cookie")
             .GetProperty("post")
             .GetProperty("security")[0];
         var activitySecurity = paths
-            .GetProperty("/Activity/{semesterId}")
+            .GetProperty("/api/v1/Activity/{semesterId}")
             .GetProperty("get")
             .GetProperty("security")[0];
         var schemes = root
@@ -913,7 +1129,11 @@ public class ApiIntegrationTests
         IOutboundRequestStatusReader? statusReader = null,
         IAccessKeyService? accessKeyService = null,
         IUserService? userService = null,
-        ISemesterService? semesterService = null)
+        ISemesterService? semesterService = null,
+        ApiVersioningOptions? apiVersioningOptions = null,
+        ClientCompatibilityOptions? clientCompatibilityOptions = null,
+        DeviceBindingOptions? deviceBindingOptions = null,
+        IClassService? classService = null)
     {
         return new WebApplicationFactory<Program>()
             .WithWebHostBuilder(builder =>
@@ -930,9 +1150,28 @@ public class ApiIntegrationTests
                             activityService,
                             resolvedAccessKeyService,
                             userService,
-                            semesterService));
+                            semesterService,
+                            classService));
                     services.RemoveAll<IAccessKeyService>();
                     services.AddSingleton<IAccessKeyService>(resolvedAccessKeyService);
+
+                    if (apiVersioningOptions is not null)
+                    {
+                        services.RemoveAll<ApiVersioningOptions>();
+                        services.AddSingleton(apiVersioningOptions);
+                    }
+
+                    if (clientCompatibilityOptions is not null)
+                    {
+                        services.RemoveAll<ClientCompatibilityOptions>();
+                        services.AddSingleton(clientCompatibilityOptions);
+                    }
+
+                    if (deviceBindingOptions is not null)
+                    {
+                        services.RemoveAll<DeviceBindingOptions>();
+                        services.AddSingleton(deviceBindingOptions);
+                    }
 
                     if (statusReader is not null)
                     {
@@ -983,12 +1222,14 @@ public class ApiIntegrationTests
             IActivityService activityService,
             IAccessKeyService accessKeyService,
             IUserService? userService,
-            ISemesterService? semesterService)
+            ISemesterService? semesterService,
+            IClassService? classService)
         {
             ActivityService = activityService;
             AccessKeyService = accessKeyService;
             UserService = userService ?? new UnsupportedUserService();
             SemesterService = semesterService ?? new UnsupportedSemesterService();
+            ClassService = classService ?? new UnsupportedClassService();
         }
 
         public IActivityService ActivityService { get; }
@@ -997,7 +1238,7 @@ public class ApiIntegrationTests
 
         public IUserService UserService { get; }
 
-        public IClassService ClassService { get; } = new UnsupportedClassService();
+        public IClassService ClassService { get; }
 
         public ISemesterService SemesterService { get; }
     }
@@ -1252,6 +1493,10 @@ public class ApiIntegrationTests
 
     private sealed class FakeSemesterService : ISemesterService
     {
+        public bool ThrowOnInvocation { get; set; }
+
+        public int InvocationCount { get; private set; }
+
         public Func<
             string,
             CancellationToken,
@@ -1262,7 +1507,33 @@ public class ApiIntegrationTests
             string token,
             CancellationToken cancellationToken = default)
         {
+            InvocationCount++;
+
+            if (ThrowOnInvocation)
+            {
+                throw new InvalidOperationException(
+                    "Semester service should not run.");
+            }
+
             return GetHandler(token, cancellationToken);
+        }
+    }
+
+    private sealed class FakeClassService : IClassService
+    {
+        public Func<
+            int,
+            string,
+            CancellationToken,
+            Task<List<ClassInfo>?>> GetHandler { get; set; } =
+                (_, _, _) => Task.FromResult<List<ClassInfo>?>([]);
+
+        public Task<List<ClassInfo>?> GetClassesAsync(
+            int semesterId,
+            string token,
+            CancellationToken cancellationToken = default)
+        {
+            return GetHandler(semesterId, token, cancellationToken);
         }
     }
 }

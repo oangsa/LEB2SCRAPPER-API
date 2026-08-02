@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Http;
+using Asp.Versioning;
 using LEB2SCRAPPER.Presentation.Filters;
 using LEB2SCRAPPER.Service.Contracts.Core;
 using LEB2SCRAPPER.Entity.Models.Authentication;
@@ -9,19 +10,24 @@ using LEB2SCRAPPER.Infrastructure.Contracts.AccessKey;
 
 namespace LEB2SCRAPPER.Presentation.Controller
 {
+    [ApiVersion("1.0")]
+    [Route("api/v{version:apiVersion}/[controller]")]
     [Route("[controller]")]
     [ApiController]
     public class UserController : ControllerBase
     {
         private readonly IServiceManager _service;
         private readonly AccessKeyRequestContext _accessKeyContext;
+        private readonly DeviceBindingRequestContext _deviceBindingContext;
 
         public UserController(
             IServiceManager service,
-            AccessKeyRequestContext accessKeyContext)
+            AccessKeyRequestContext accessKeyContext,
+            DeviceBindingRequestContext deviceBindingContext)
         {
             _service = service;
             _accessKeyContext = accessKeyContext;
+            _deviceBindingContext = deviceBindingContext;
         }
 
         [HttpPost("login")]
@@ -94,6 +100,23 @@ namespace LEB2SCRAPPER.Presentation.Controller
             }
 
             return Ok(new { Cookie = cookie });
+        }
+
+        [HttpPost("logout")]
+        [AccessKeyAuthorize(AccessKeyRequirement.Activated)]
+        [ProducesResponseType(StatusCodes.Status204NoContent)]
+        [ProducesResponseType(typeof(ErrorResponse), StatusCodes.Status400BadRequest)]
+        [ProducesResponseType(typeof(ErrorResponse), StatusCodes.Status401Unauthorized)]
+        [ProducesResponseType(typeof(ErrorResponse), StatusCodes.Status403Forbidden)]
+        [ProducesResponseType(typeof(ErrorResponse), StatusCodes.Status503ServiceUnavailable)]
+        public async Task<IActionResult> Logout(CancellationToken cancellationToken)
+        {
+            await _service.AccessKeyService.LogoutAsync(
+                _accessKeyContext.Current!,
+                _deviceBindingContext.Current,
+                cancellationToken);
+
+            return NoContent();
         }
     }
 }

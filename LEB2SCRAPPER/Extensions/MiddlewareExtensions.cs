@@ -8,4 +8,16 @@ public static class MiddlewareExtensions
     {
         return app.UseMiddleware<GlobalExceptionMiddleware>();
     }
+
+    public static IApplicationBuilder UseLegacyRouteCompatibility(
+        this IApplicationBuilder app)
+    {
+        return app.UseMiddleware<LegacyRouteMiddleware>();
+    }
+
+    public static IApplicationBuilder UseClientCompatibility(
+        this IApplicationBuilder app)
+    {
+        return app.UseMiddleware<ClientCompatibilityMiddleware>();
+    }
 }

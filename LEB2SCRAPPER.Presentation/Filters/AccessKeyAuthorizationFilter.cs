@@ -1,8 +1,10 @@
 using LEB2SCRAPPER.Entity.Exceptions.AccessKey;
+using LEB2SCRAPPER.Entity.Models.AccessKey;
 using LEB2SCRAPPER.Infrastructure.Contracts.AccessKey;
 using LEB2SCRAPPER.Service.Contracts.Master;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Filters;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace LEB2SCRAPPER.Presentation.Filters;
@@ -32,26 +34,35 @@ public sealed class AccessKeyAuthorizeAttribute : Attribute, IFilterFactory, IOr
         return new AccessKeyAuthorizationFilter(
             serviceProvider.GetRequiredService<IAccessKeyService>(),
             serviceProvider.GetRequiredService<AccessKeyRequestContext>(),
-            Requirement);
+            Requirement,
+            serviceProvider.GetRequiredService<DeviceBindingRequestContext>());
     }
 }
 
 public sealed class AccessKeyAuthorizationFilter : IAsyncAuthorizationFilter
 {
     public const string HeaderName = "access-key";
+    public const string DeviceIdHeaderName = "X-Device-ID";
+    public const string DeviceNameHeaderName = "X-Device-Name";
+    public const string DevicePlatformHeaderName = "X-Device-Platform";
+    public const string DeviceOsVersionHeaderName = "X-Device-OS-Version";
+    public const string DeviceAppVersionHeaderName = "X-Device-App-Version";
 
     private readonly IAccessKeyService _accessKeyService;
     private readonly AccessKeyRequestContext _requestContext;
     private readonly AccessKeyRequirement _requirement;
+    private readonly DeviceBindingRequestContext? _deviceBindingRequestContext;
 
     public AccessKeyAuthorizationFilter(
         IAccessKeyService accessKeyService,
         AccessKeyRequestContext requestContext,
-        AccessKeyRequirement requirement)
+        AccessKeyRequirement requirement,
+        DeviceBindingRequestContext? deviceBindingRequestContext = null)
     {
         _accessKeyService = accessKeyService;
         _requestContext = requestContext;
         _requirement = requirement;
+        _deviceBindingRequestContext = deviceBindingRequestContext;
     }
 
     public async Task OnAuthorizationAsync(AuthorizationFilterContext context)
@@ -78,6 +89,54 @@ public sealed class AccessKeyAuthorizationFilter : IAsyncAuthorizationFilter
                 keyId,
                 context.HttpContext.RequestAborted);
 
+        var deviceBinding = ReadDeviceBindingRequest(context.HttpContext.Request);
+        if (deviceBinding is not null)
+        {
+            _deviceBindingRequestContext?.Set(deviceBinding);
+        }
+        await _accessKeyService.EnsureDeviceBindingAsync(
+            state,
+            deviceBinding,
+            _requirement == AccessKeyRequirement.Provisioned,
+            context.HttpContext.RequestAborted);
+
         _requestContext.Set(state);
+    }
+
+    private static DeviceBindingRequest? ReadDeviceBindingRequest(
+        HttpRequest request)
+    {
+        var deviceId = ReadHeader(request, DeviceIdHeaderName);
+
+        if (deviceId is null)
+        {
+            return null;
+        }
+
+        return new DeviceBindingRequest(
+            deviceId,
+            ReadHeader(request, DeviceNameHeaderName),
+            ReadHeader(request, DevicePlatformHeaderName),
+            ReadHeader(request, DeviceOsVersionHeaderName),
+            ReadHeader(request, DeviceAppVersionHeaderName));
+    }
+
+    private static string? ReadHeader(
+        HttpRequest request,
+        string name)
+    {
+        var values = request.Headers[name];
+
+        if (values.Count > 1)
+        {
+            throw new DeviceIdInvalidException();
+        }
+
+        if (values.Count == 0 || string.IsNullOrWhiteSpace(values[0]))
+        {
+            return null;
+        }
+
+        return values[0]!.Trim();
     }
 }

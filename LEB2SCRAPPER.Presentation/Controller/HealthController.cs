@@ -3,9 +3,12 @@ using LEB2SCRAPPER.Infrastructure.Contracts.Outbound;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Asp.Versioning;
 
 namespace LEB2SCRAPPER.Presentation.Controller;
 
+[ApiVersion("1.0")]
+[Route("api/v{version:apiVersion}/health/leb2")]
 [Route("health/leb2")]
 [ApiController]
 public class HealthController : ControllerBase

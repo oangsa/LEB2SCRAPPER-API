@@ -5,8 +5,11 @@ credential contract, Supabase-backed access-key enrollment, error codes, backoff
 behavior, and alert configuration.
 
 See [the API reference](docs/api-reference.md) for request examples. Every
-user-facing route requires the manually provisioned `access-key` header; data
-routes additionally require the opaque LEB2 session cookie in `Authorization`.
+user-facing route uses the canonical `/api/v1` prefix. Protected routes require the
+manually provisioned `access-key` header; data routes additionally require the opaque
+LEB2 session cookie in `Authorization`. During migration,
+`ApiVersioning__LegacyRoutesEnabled=true` keeps deprecated unversioned aliases
+available; set it to `false` after clients migrate.
 
 See [Cloud Run continuous deployment](docs/cloud-run-continuous-deployment.md) for
 the GitHub Actions workflow and one-time Workload Identity Federation setup.
@@ -15,6 +18,13 @@ An activated access key is bound to one local student identity. It cannot be use
 to log in as another student, obtain a LEB2 session for another student, or request
 activities with another LEB2 user ID. The key relationship is `keys.id` to
 `user_keys` to `users.student_id` and `users.leb2_user_id`.
+
+Device binding is temporary and separate from account ownership. When enabled,
+`X-Device-ID` is HMAC-SHA256 fingerprinted before persistence, one active device is
+allowed per key, and `POST /api/v1/User/logout` removes only that device binding.
+`X-Client-Version` is a separate frontend-build compatibility header. Anonymous
+bootstrap and monitoring endpoints are `GET /api/v1/meta` and
+`GET /api/v1/health/leb2`.
 
 Production Cloud Run uses at most one active application instance. Caches,
 throttling, backoff, incident correlation, and health state are process-local;

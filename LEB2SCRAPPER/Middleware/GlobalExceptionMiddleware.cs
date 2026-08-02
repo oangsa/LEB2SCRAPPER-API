@@ -101,7 +101,7 @@ public class GlobalExceptionMiddleware
                 break;
 
             case AccessKeyNotActivatedException:
-                response.Message = "The access key must be activated through /User/login first.";
+                response.Message = "The access key must be activated through /api/v1/User/login first.";
                 response.ResponseCode = ApiErrorCodes.AccessKeyNotActivated;
                 context.Response.StatusCode = StatusCodes.Status403Forbidden;
                 break;
@@ -128,6 +128,30 @@ public class GlobalExceptionMiddleware
                 response.Message = "The access key identity cannot be registered.";
                 response.ResponseCode = ApiErrorCodes.AccessKeyIdentityConflict;
                 context.Response.StatusCode = StatusCodes.Status409Conflict;
+                break;
+
+            case DeviceIdRequiredException:
+                response.Message = "A device ID is required.";
+                response.ResponseCode = ApiErrorCodes.DeviceIdRequired;
+                context.Response.StatusCode = StatusCodes.Status400BadRequest;
+                break;
+
+            case DeviceIdInvalidException:
+                response.Message = "The device ID is invalid.";
+                response.ResponseCode = ApiErrorCodes.DeviceIdInvalid;
+                context.Response.StatusCode = StatusCodes.Status400BadRequest;
+                break;
+
+            case DeviceBindingRequiredException:
+                response.Message = "The access key is not bound to this device.";
+                response.ResponseCode = ApiErrorCodes.DeviceBindingRequired;
+                context.Response.StatusCode = StatusCodes.Status403Forbidden;
+                break;
+
+            case DeviceBindingMismatchException:
+                response.Message = "The access key is bound to another device.";
+                response.ResponseCode = ApiErrorCodes.DeviceBindingMismatch;
+                context.Response.StatusCode = StatusCodes.Status403Forbidden;
                 break;
 
             case AccessKeyDatabaseException databaseException when databaseException.IsTransient:

@@ -85,7 +85,167 @@ public sealed class AccessKeyRepositoryTests : IClassFixture<AccessKeyDatabaseFi
         Assert.Equal(
             "Example Student",
             await ScalarAsync<string>(
-                "SELECT name FROM users WHERE student_id = 'student-001';"));
+            "SELECT name FROM users WHERE student_id = 'student-001';"));
+    }
+
+    [Fact]
+    public async Task UpsertWithDevice_BindsDeviceInSameTransaction()
+    {
+        await ResetAsync();
+        await InsertKeyAsync(KeyId);
+
+        await CreateRepository().UpsertUserAndClaimKeyWithDeviceAsync(
+            KeyId,
+            "student-001",
+            1001,
+            "Example Student",
+            new DeviceBindingData(
+                "HASH-ONE",
+                "Test phone",
+                "android",
+                "14",
+                "0.5.0"));
+
+        var state = await CreateRepository().GetAccessKeyStateAsync(KeyId);
+
+        Assert.Equal("HASH-ONE", state?.DeviceIdHash);
+        Assert.Equal(
+            1,
+            await ScalarAsync<long>(
+                "SELECT COUNT(*) FROM key_device_bindings "
+                + "WHERE key_id = @key_id AND unbound_at IS NULL;",
+                command => command.Parameters.AddWithValue("key_id", KeyId)));
+    }
+
+    [Fact]
+    public async Task UpsertWithSameDevice_IsIdempotentAndUpdatesMetadata()
+    {
+        await ResetAsync();
+        await InsertKeyAsync(KeyId);
+        var repository = CreateRepository();
+        var firstBinding = new DeviceBindingData(
+            "HASH-ONE",
+            "Old name",
+            "android",
+            "14",
+            "0.5.0");
+
+        await repository.UpsertUserAndClaimKeyWithDeviceAsync(
+            KeyId,
+            "student-001",
+            1001,
+            "Example Student",
+            firstBinding);
+        await repository.UpsertUserAndClaimKeyWithDeviceAsync(
+            KeyId,
+            "student-001",
+            1001,
+            "Example Student",
+            firstBinding with { DeviceName = "New name" });
+
+        Assert.Equal(
+            1,
+            await ScalarAsync<long>(
+                "SELECT COUNT(*) FROM key_device_bindings "
+                + "WHERE key_id = @key_id;",
+                command => command.Parameters.AddWithValue("key_id", KeyId)));
+        Assert.Equal(
+            "New name",
+            await ScalarAsync<string>(
+                "SELECT device_name FROM key_device_bindings "
+                + "WHERE key_id = @key_id AND unbound_at IS NULL;",
+                command => command.Parameters.AddWithValue("key_id", KeyId)));
+    }
+
+    [Fact]
+    public async Task UpsertWithDifferentActiveDevice_IsRejected()
+    {
+        await ResetAsync();
+        await InsertKeyAsync(KeyId);
+        var repository = CreateRepository();
+
+        await repository.UpsertUserAndClaimKeyWithDeviceAsync(
+            KeyId,
+            "student-001",
+            1001,
+            "Example Student",
+            new DeviceBindingData("HASH-ONE", null, null, null, null));
+
+        await Assert.ThrowsAsync<DeviceBindingMismatchException>(() =>
+            repository.UpsertUserAndClaimKeyWithDeviceAsync(
+                KeyId,
+                "student-001",
+                1001,
+                "Example Student",
+                new DeviceBindingData("HASH-TWO", null, null, null, null)));
+    }
+
+    [Fact]
+    public async Task DifferentDevicesConcurrency_AllowsOnlyOneActiveBinding()
+    {
+        await ResetAsync();
+        await InsertKeyAsync(KeyId);
+        var repository = CreateRepository();
+
+        var outcomes = await Task.WhenAll(
+            CaptureAsync(() => repository.UpsertUserAndClaimKeyWithDeviceAsync(
+                KeyId,
+                "student-001",
+                1001,
+                "Example Student",
+                new DeviceBindingData("HASH-ONE", null, null, null, null))),
+            CaptureAsync(() => repository.UpsertUserAndClaimKeyWithDeviceAsync(
+                KeyId,
+                "student-001",
+                1001,
+                "Example Student",
+                new DeviceBindingData("HASH-TWO", null, null, null, null))));
+
+        Assert.Single(outcomes, exception => exception is null);
+        Assert.Single(
+            outcomes,
+            exception => exception is DeviceBindingMismatchException);
+        Assert.Equal(
+            1,
+            await ScalarAsync<long>(
+                "SELECT COUNT(*) FROM key_device_bindings "
+                + "WHERE key_id = @key_id AND unbound_at IS NULL;",
+                command => command.Parameters.AddWithValue("key_id", KeyId)));
+    }
+
+    [Fact]
+    public async Task LogoutUnbindsOnlyDeviceAndAllowsLaterRebind()
+    {
+        await ResetAsync();
+        await InsertKeyAsync(KeyId);
+        var repository = CreateRepository();
+
+        await repository.UpsertUserAndClaimKeyWithDeviceAsync(
+            KeyId,
+            "student-001",
+            1001,
+            "Example Student",
+            new DeviceBindingData("HASH-ONE", null, null, null, null));
+        await repository.UnbindDeviceAsync(KeyId, "HASH-ONE", "client-logout");
+
+        var unboundState = await repository.GetAccessKeyStateAsync(KeyId);
+        Assert.Null(unboundState?.DeviceIdHash);
+        Assert.Equal(
+            1,
+            await ScalarAsync<long>(
+                "SELECT COUNT(*) FROM user_keys WHERE key_id = @key_id;",
+                command => command.Parameters.AddWithValue("key_id", KeyId)));
+
+        await repository.UpsertUserAndClaimKeyWithDeviceAsync(
+            KeyId,
+            "student-001",
+            1001,
+            "Example Student",
+            new DeviceBindingData("HASH-TWO", null, null, null, null));
+
+        Assert.Equal(
+            "HASH-TWO",
+            (await repository.GetAccessKeyStateAsync(KeyId))?.DeviceIdHash);
     }
 
     [Fact]
@@ -413,7 +573,7 @@ public sealed class AccessKeyRepositoryTests : IClassFixture<AccessKeyDatabaseFi
     private async Task ResetAsync()
     {
         await _fixture.ExecuteAsync(
-            "TRUNCATE TABLE user_keys, users, keys CASCADE;");
+            "TRUNCATE TABLE key_device_bindings, user_keys, users, keys CASCADE;");
     }
 
     private async Task InsertKeyAsync(Guid keyId)
@@ -577,6 +737,31 @@ public sealed class AccessKeyDatabaseFixture : IAsyncLifetime
                     ON DELETE CASCADE,
                 CONSTRAINT uq_user_keys_key UNIQUE (key_id)
             );
+
+            CREATE TABLE key_device_bindings (
+                id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+                key_id uuid NOT NULL,
+                device_id_hash text NOT NULL,
+                device_name text,
+                platform text,
+                os_version text,
+                app_version text,
+                bound_at timestamptz NOT NULL,
+                unbound_at timestamptz,
+                unbound_reason text,
+                created_by text NOT NULL,
+                updated_by text NOT NULL,
+                created_at timestamptz NOT NULL,
+                updated_at timestamptz NOT NULL,
+                CONSTRAINT fk_key_device_bindings_key
+                    FOREIGN KEY (key_id)
+                    REFERENCES keys(id)
+                    ON DELETE CASCADE
+            );
+
+            CREATE UNIQUE INDEX uq_key_device_bindings_active_key
+                ON key_device_bindings (key_id)
+                WHERE unbound_at IS NULL;
 
             CREATE OR REPLACE FUNCTION force_claim_conflict()
             RETURNS trigger

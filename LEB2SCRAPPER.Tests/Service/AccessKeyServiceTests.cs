@@ -6,6 +6,7 @@ using LEB2SCRAPPER.Entity.Models.Authentication;
 using LEB2SCRAPPER.Entity.Models.Class;
 using LEB2SCRAPPER.Entity.Models.Semester;
 using LEB2SCRAPPER.Entity.Models.Users;
+using LEB2SCRAPPER.Infrastructure.Contracts.AccessKey;
 using LEB2SCRAPPER.Service;
 using LEB2SCRAPPER.Service.Master;
 
@@ -74,6 +75,70 @@ public class AccessKeyServiceTests
         Assert.Equal("student-001", repository.RegisteredStudentId);
         Assert.Equal(1001, repository.RegisteredLeb2UserId);
         Assert.Equal("Example Student", repository.RegisteredName);
+    }
+
+    [Fact]
+    public async Task DeviceBinding_UsesHmacAndRejectsMismatch()
+    {
+        var repository = new StubAccessKeyRepository();
+        var service = CreateService(
+            repository,
+            new DeviceBindingOptions
+            {
+                Enabled = true,
+                EnforcementEnabled = true,
+                HmacSecret = "test-secret"
+            });
+        var request = new DeviceBindingRequest(
+            "device-one",
+            "Test phone",
+            "android",
+            "14",
+            "0.5.0");
+
+        await service.RegisterSuccessfulLoginWithDeviceAsync(
+            KeyId,
+            "student-001",
+            1001,
+            "Example Student",
+            request);
+
+        Assert.NotNull(repository.RegisteredDevice);
+        Assert.NotEqual("device-one", repository.RegisteredDevice?.DeviceIdHash);
+
+        var state = new AccessKeyState(
+            KeyId,
+            UserId,
+            "student-001",
+            1001,
+            repository.RegisteredDevice?.DeviceIdHash);
+        await service.EnsureDeviceBindingAsync(state, request, false);
+
+        await Assert.ThrowsAsync<DeviceBindingMismatchException>(() =>
+            service.EnsureDeviceBindingAsync(
+                state,
+                request with { DeviceId = "device-two" },
+                false));
+    }
+
+    [Fact]
+    public async Task Logout_UnbindsDeviceWithoutChangingAccountOwnership()
+    {
+        var repository = new StubAccessKeyRepository();
+        var service = CreateService(
+            repository,
+            new DeviceBindingOptions
+            {
+                Enabled = true,
+                HmacSecret = "test-secret"
+            });
+
+        await service.LogoutAsync(
+            new AccessKeyState(KeyId, UserId, "student-001", 1001),
+            new DeviceBindingRequest("device-one", null, null, null, null));
+
+        Assert.NotNull(repository.UnboundDeviceHash);
+        Assert.Equal(KeyId, repository.UnboundKeyId);
     }
 
     [Fact]
@@ -161,11 +226,14 @@ public class AccessKeyServiceTests
                 1002));
     }
 
-    private static AccessKeyService CreateService(StubAccessKeyRepository repository)
+    private static AccessKeyService CreateService(
+        StubAccessKeyRepository repository,
+        DeviceBindingOptions? deviceBindingOptions = null)
     {
         return new AccessKeyService(
             new StubCoreAdapterManager(
-                new StubRepositoryManager(repository)));
+                new StubRepositoryManager(repository)),
+            deviceBindingOptions);
     }
 
     private sealed class StubCoreAdapterManager : ICoreAdapterManager
@@ -190,6 +258,12 @@ public class AccessKeyServiceTests
 
         public string? RegisteredName { get; private set; }
 
+        public DeviceBindingData? RegisteredDevice { get; private set; }
+
+        public Guid? UnboundKeyId { get; private set; }
+
+        public string? UnboundDeviceHash { get; private set; }
+
         public Task<AccessKeyState?> GetAccessKeyStateAsync(
             Guid keyId,
             CancellationToken cancellationToken = default)
@@ -208,6 +282,33 @@ public class AccessKeyServiceTests
             RegisteredStudentId = studentId;
             RegisteredLeb2UserId = leb2UserId;
             RegisteredName = name;
+            return Task.CompletedTask;
+        }
+
+        public Task UpsertUserAndClaimKeyWithDeviceAsync(
+            Guid keyId,
+            string studentId,
+            int leb2UserId,
+            string name,
+            DeviceBindingData deviceBinding,
+            CancellationToken cancellationToken = default)
+        {
+            RegisteredKeyId = keyId;
+            RegisteredStudentId = studentId;
+            RegisteredLeb2UserId = leb2UserId;
+            RegisteredName = name;
+            RegisteredDevice = deviceBinding;
+            return Task.CompletedTask;
+        }
+
+        public Task UnbindDeviceAsync(
+            Guid keyId,
+            string deviceIdHash,
+            string reason,
+            CancellationToken cancellationToken = default)
+        {
+            UnboundKeyId = keyId;
+            UnboundDeviceHash = deviceIdHash;
             return Task.CompletedTask;
         }
     }

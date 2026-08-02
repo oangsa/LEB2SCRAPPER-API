@@ -1,4 +1,7 @@
 using LEB2SCRAPPER.Authentication;
+using LEB2SCRAPPER.Infrastructure.Contracts.AccessKey;
+using LEB2SCRAPPER.Infrastructure.Contracts.Compatibility;
+using LEB2SCRAPPER.Middleware;
 using LEB2SCRAPPER.Presentation.Filters;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.OpenApi.Models;
@@ -9,6 +12,16 @@ namespace LEB2SCRAPPER.Swagger;
 public sealed class AuthorizeOperationFilter : IOperationFilter
 {
     private const string Leb2UserIdHeaderName = "X-LEB2-USER-ID";
+    private readonly DeviceBindingOptions _deviceBindingOptions;
+    private readonly ClientCompatibilityOptions _clientCompatibilityOptions;
+
+    public AuthorizeOperationFilter(
+        DeviceBindingOptions deviceBindingOptions,
+        ClientCompatibilityOptions clientCompatibilityOptions)
+    {
+        _deviceBindingOptions = deviceBindingOptions;
+        _clientCompatibilityOptions = clientCompatibilityOptions;
+    }
 
     public void Apply(OpenApiOperation operation, OperationFilterContext context)
     {
@@ -45,6 +58,43 @@ public sealed class AuthorizeOperationFilter : IOperationFilter
             return;
         }
 
+        AddHeaderParameter(
+            operation,
+            AccessKeyAuthorizationFilter.DeviceIdHeaderName,
+            "Opaque device identifier. It is HMAC-bound server-side and never persisted in raw form.",
+            _deviceBindingOptions.EnforcementEnabled);
+        AddHeaderParameter(
+            operation,
+            AccessKeyAuthorizationFilter.DeviceNameHeaderName,
+            "Optional device display name.",
+            false);
+        AddHeaderParameter(
+            operation,
+            AccessKeyAuthorizationFilter.DevicePlatformHeaderName,
+            "Optional device platform.",
+            false);
+        AddHeaderParameter(
+            operation,
+            AccessKeyAuthorizationFilter.DeviceOsVersionHeaderName,
+            "Optional device operating-system version.",
+            false);
+        AddHeaderParameter(
+            operation,
+            AccessKeyAuthorizationFilter.DeviceAppVersionHeaderName,
+            "Optional frontend app version recorded with the device binding.",
+            false);
+        AddHeaderParameter(
+            operation,
+            ClientCompatibilityMiddleware.ClientVersionHeaderName,
+            "Frontend application version, separate from API version.",
+            _clientCompatibilityOptions.EnforcementEnabled);
+        operation.Responses.TryAdd(
+            StatusCodes.Status426UpgradeRequired.ToString(),
+            new OpenApiResponse
+            {
+                Description = "Client update required when compatibility enforcement is enabled."
+            });
+
         var securityRequirement = new OpenApiSecurityRequirement();
 
         if (hasLeb2Authorization)
@@ -74,5 +124,28 @@ public sealed class AuthorizeOperationFilter : IOperationFilter
         }
 
         operation.Security.Add(securityRequirement);
+    }
+
+    private static void AddHeaderParameter(
+        OpenApiOperation operation,
+        string name,
+        string description,
+        bool required)
+    {
+        if (operation.Parameters.Any(parameter =>
+                parameter.In == ParameterLocation.Header
+                && string.Equals(parameter.Name, name, StringComparison.OrdinalIgnoreCase)))
+        {
+            return;
+        }
+
+        operation.Parameters.Add(new OpenApiParameter
+        {
+            Name = name,
+            In = ParameterLocation.Header,
+            Description = description,
+            Required = required,
+            Schema = new OpenApiSchema { Type = "string" }
+        });
     }
 }

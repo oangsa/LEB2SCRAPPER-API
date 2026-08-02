@@ -9,11 +9,14 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.ModelBinding;
+using Asp.Versioning;
 
 namespace LEB2SCRAPPER.Presentation.Controller;
 
 [Route("[controller]")]
+[Route("api/v{version:apiVersion}/[controller]")]
 [ApiController]
+[ApiVersion("1.0")]
 [AccessKeyAuthorize(AccessKeyRequirement.Activated)]
 public class ActivityController : ControllerBase
 {
