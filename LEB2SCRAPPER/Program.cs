@@ -29,8 +29,8 @@ using Npgsql;
 
 var builder = WebApplication.CreateBuilder(args);
 
-const string connectionStringName = "Supabase";
-const string connectionStringConfigurationKey = "ConnectionStrings:Supabase";
+const string connectionStringName = "Production";
+const string connectionStringConfigurationKey = "ConnectionStrings:Production";
 var databaseConnectionString = builder.Configuration.GetConnectionString(connectionStringName);
 
 if (builder.Environment.IsProduction()

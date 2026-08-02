@@ -69,7 +69,7 @@ never moves a key from one user to another.
 
 ## Supabase connection
 
-The backend uses direct Npgsql access through `ConnectionStrings:Supabase` in every
+The backend uses direct Npgsql access through `ConnectionStrings:Production` in every
 environment. It never creates tables or runs migrations. Keep the local connection
 string in user secrets and the production value in Secret Manager; never commit
 either value. The existing `users` table must include nullable `leb2_user_id` and
