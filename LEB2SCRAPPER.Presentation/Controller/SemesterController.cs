@@ -1,4 +1,5 @@
 using LEB2SCRAPPER.Entity.Models.Response;
+using LEB2SCRAPPER.Entity.Models.Semester;
 using LEB2SCRAPPER.Presentation.Filters;
 using LEB2SCRAPPER.Infrastructure.Contracts.Authentication;
 using Microsoft.AspNetCore.Mvc;
@@ -27,7 +28,7 @@ namespace LEB2SCRAPPER.Presentation.Controller
         [HttpGet]
         [AccessKeyAuthorize(AccessKeyRequirement.Activated)]
         [Authorize]
-        [ProducesResponseType(StatusCodes.Status200OK)]
+        [ProducesResponseType(typeof(List<SemesterInfo>), StatusCodes.Status200OK)]
         [ProducesResponseType(typeof(ValidationErrorResponse), StatusCodes.Status400BadRequest)]
         [ProducesResponseType(typeof(ErrorResponse), StatusCodes.Status401Unauthorized)]
         [ProducesResponseType(typeof(ErrorResponse), StatusCodes.Status403Forbidden)]
@@ -40,7 +41,7 @@ namespace LEB2SCRAPPER.Presentation.Controller
                 _sessionCredential.Value!,
                 cancellationToken);
 
-            return Ok(semesters ?? new List<int>());
+            return Ok(semesters ?? new List<SemesterInfo>());
         }
 
     }

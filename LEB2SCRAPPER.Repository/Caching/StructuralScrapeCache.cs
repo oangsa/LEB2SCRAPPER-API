@@ -1,5 +1,6 @@
 using LEB2SCRAPPER.Contracts.Repository;
 using LEB2SCRAPPER.Entity.Models.Class;
+using LEB2SCRAPPER.Entity.Models.Semester;
 
 namespace LEB2SCRAPPER.Repository.Caching;
 
@@ -50,9 +51,9 @@ public sealed class StructuralScrapeCache : IStructuralScrapeCache, IDisposable
         }
     }
 
-    public Task<List<int>?> GetSemesterIdsAsync(
+    public Task<List<SemesterInfo>?> GetSemestersAsync(
         string clientKey,
-        Func<CancellationToken, Task<List<int>?>> valueFactory,
+        Func<CancellationToken, Task<List<SemesterInfo>?>> valueFactory,
         CancellationToken cancellationToken = default)
     {
         var key = new CacheKey(CacheValueKind.Semesters, clientKey, null);
@@ -60,7 +61,7 @@ public sealed class StructuralScrapeCache : IStructuralScrapeCache, IDisposable
         return GetOrCreateAsync(
             key,
             valueFactory,
-            static semesterIds => semesterIds.ToList(),
+            CloneSemesters,
             cancellationToken);
     }
 
@@ -278,6 +279,17 @@ public sealed class StructuralScrapeCache : IStructuralScrapeCache, IDisposable
             {
                 Id = classInfo.Id,
                 Name = classInfo.Name
+            })
+            .ToList();
+    }
+
+    private static List<SemesterInfo> CloneSemesters(List<SemesterInfo> semesters)
+    {
+        return semesters
+            .Select(semesterInfo => new SemesterInfo
+            {
+                Id = semesterInfo.Id,
+                Name = semesterInfo.Name
             })
             .ToList();
     }

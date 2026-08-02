@@ -3,6 +3,7 @@ using LEB2SCRAPPER.Entity.Exceptions.Leb2Integration;
 using LEB2SCRAPPER.Entity.Exceptions.ScrapingCustomException;
 using LEB2SCRAPPER.Entity.Models.Authentication;
 using LEB2SCRAPPER.Entity.Models.Class;
+using LEB2SCRAPPER.Entity.Models.Semester;
 using LEB2SCRAPPER.Infrastructure.Contracts.Outbound;
 using LEB2SCRAPPER.Repository.Parsing;
 using OpenQA.Selenium;
@@ -64,7 +65,7 @@ public class ScrapingRepository : IScrapingRepository
             cancellationToken);
     }
 
-    public Task<List<int>?> GetSemesterIdsAsync(
+    public Task<List<SemesterInfo>?> GetSemestersAsync(
         string token,
         CancellationToken cancellationToken = default)
     {
@@ -78,11 +79,11 @@ public class ScrapingRepository : IScrapingRepository
             Leb2OutboundEndpoints.Semesters,
             clientKey);
 
-        return _structuralScrapeCache.GetSemesterIdsAsync(
+        return _structuralScrapeCache.GetSemestersAsync(
             clientKey,
             requestToken => _outboundRequestGate.ExecuteAsync(
                 context,
-                gateToken => GetSemesterIdsCoreAsync(token, gateToken),
+                gateToken => GetSemestersCoreAsync(token, gateToken),
                 requestToken),
             cancellationToken);
     }
@@ -228,7 +229,7 @@ public class ScrapingRepository : IScrapingRepository
         }
     }
 
-    private async Task<List<int>?> GetSemesterIdsCoreAsync(
+    private async Task<List<SemesterInfo>?> GetSemestersCoreAsync(
         string token,
         CancellationToken cancellationToken)
     {
@@ -250,7 +251,7 @@ public class ScrapingRepository : IScrapingRepository
                 .WaitAsync(cancellationToken);
             EnsureSessionIsActive(driver);
 
-            return await ExtractSemesterIdsAsync(driver, cancellationToken);
+            return await ExtractSemestersAsync(driver, cancellationToken);
         }
         catch (WebDriverException) when (cancellationToken.IsCancellationRequested)
         {
@@ -385,7 +386,7 @@ public class ScrapingRepository : IScrapingRepository
             && uri.Host.Equals("app.leb2.org", StringComparison.OrdinalIgnoreCase);
     }
 
-    private async Task<List<int>> ExtractSemesterIdsAsync(
+    private async Task<List<SemesterInfo>> ExtractSemestersAsync(
         IWebDriver driver,
         CancellationToken cancellationToken)
     {
@@ -395,8 +396,11 @@ public class ScrapingRepository : IScrapingRepository
             await RunDriverOperationAsync(
                 () => wait.Until(d =>
                 {
-                    var links = d.FindElements(By.CssSelector("a[href*='semester_id=']"));
-                    return links.Count > 0;
+                    var links = d.FindElements(By.CssSelector("a[href]"));
+                    return links.Any(link =>
+                        Leb2RenderedPageParser.IsUsableSemesterLink(
+                            link.GetAttribute("href"),
+                            link.Text));
                 }),
                 cancellationToken);
         }
@@ -417,7 +421,7 @@ public class ScrapingRepository : IScrapingRepository
             cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
 
-        return _renderedPageParser.ParseSemesterIds(pageSource);
+        return _renderedPageParser.ParseSemesters(pageSource);
     }
 
     private async Task<List<ClassInfo>?> ExtractClassesAsync(

@@ -389,7 +389,9 @@ Relevant error responses:
 
 ### GET `/Semester`
 
-Returns the semester IDs visible to the authenticated LEB2 session.
+Returns the semesters visible to the authenticated LEB2 session. `id` is the
+internal LEB2 semester ID used with `/Class/{id}` and activity routes. `name` is
+the rendered visible semester label for display.
 
 Required header:
 
@@ -404,16 +406,14 @@ Successful response — `200 OK`:
 
 ```json
 [
-  101,
-  102
+  {
+    "id": 46,
+    "name": "1/2026"
+  }
 ]
 ```
 
-If no semesters are found, the response is:
-
-```json
-[]
-```
+Missing or unrecognizable semester structure returns `502 SCRAPE_RESPONSE_CHANGED`.
 
 Relevant error responses:
 

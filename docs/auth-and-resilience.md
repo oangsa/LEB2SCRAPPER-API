@@ -224,9 +224,10 @@ list.
 ## Structural scrape cache
 
 Rendered semester and class results are cached in memory for 60 seconds by default.
-Cache entries are partitioned by the opaque session fingerprint, and class entries
-also include the semester ID. Successful empty class lists are cached; null results,
-failures, cancellations, credentials, and cookies are not.
+Semester entries retain each internal LEB2 ID and rendered display name. Cache entries
+are partitioned by the opaque session fingerprint, and class entries also include the
+semester ID. Successful empty class lists are cached; null results, failures,
+cancellations, credentials, and cookies are not.
 
 Concurrent misses for the same key are coalesced before an outbound permit or browser
 is acquired. Mutable results are copied when stored and returned. Defaults are

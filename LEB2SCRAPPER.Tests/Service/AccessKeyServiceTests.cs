@@ -4,6 +4,7 @@ using LEB2SCRAPPER.Entity.Exceptions.AccessKey;
 using LEB2SCRAPPER.Entity.Models.AccessKey;
 using LEB2SCRAPPER.Entity.Models.Authentication;
 using LEB2SCRAPPER.Entity.Models.Class;
+using LEB2SCRAPPER.Entity.Models.Semester;
 using LEB2SCRAPPER.Entity.Models.Users;
 using LEB2SCRAPPER.Service;
 using LEB2SCRAPPER.Service.Master;
@@ -239,7 +240,7 @@ public class AccessKeyServiceTests
             throw new NotSupportedException();
         }
 
-        public Task<List<int>?> GetSemesterIdsAsync(
+        public Task<List<SemesterInfo>?> GetSemestersAsync(
             string token,
             CancellationToken cancellationToken = default)
         {

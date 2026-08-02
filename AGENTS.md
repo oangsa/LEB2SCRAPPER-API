@@ -329,6 +329,8 @@ The default container runs as Production, so its Swagger UI is not enabled unles
     does not assign keys.
 - `GET /Semester`
   - Requires an assigned `access-key` and the LEB2 session value in `Authorization`.
+  - Returns `{ id, name }` objects: `id` is the internal LEB2 semester ID used by
+    class/activity routes, and `name` is the rendered visible semester label.
 - `GET /Class/{id}`
   - Requires an assigned `access-key` and the LEB2 session value in `Authorization`.
   - `id` is the semester ID.
