@@ -4,6 +4,7 @@ using LEB2SCRAPPER.Infrastructure.Contracts.HttpService;
 using LEB2SCRAPPER.Infrastructure.Contracts.Outbound;
 using LEB2SCRAPPER.Repository.Master;
 using LEB2SCRAPPER.Repository.Caching;
+using Microsoft.Extensions.Logging;
 
 namespace LEB2SCRAPPER.Repository.Core
 {
@@ -20,13 +21,17 @@ namespace LEB2SCRAPPER.Repository.Core
             IClientFingerprintProvider clientFingerprintProvider,
             IStructuralScrapeCache structuralScrapeCache,
             IActivityResultCache activityResultCache,
-            IAccessKeyRepository accessKeyRepository)
+            IAccessKeyRepository accessKeyRepository,
+            ScrapingOptions scrapingOptions,
+            ILogger<ScrapingRepository> scrapingRepositoryLogger)
         {
             _scrapingRepository = new Lazy<IScrapingRepository>(
                 () => new ScrapingRepository(
                     outboundRequestGate,
                     clientFingerprintProvider,
-                    structuralScrapeCache));
+                    structuralScrapeCache,
+                    scrapingOptions,
+                    scrapingRepositoryLogger));
             _activityRepository = new Lazy<IActivityRepository>(
                 () => new ActivityRepository(
                     httpService,

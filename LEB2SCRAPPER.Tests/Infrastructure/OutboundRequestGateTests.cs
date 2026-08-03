@@ -352,6 +352,162 @@ public class OutboundRequestGateTests
             });
     }
 
+    [Fact]
+    public async Task SessionBackoff_IsolatedByClient()
+    {
+        var timeProvider = new ManualTimeProvider();
+        using var gate = CreateGate(
+            new RecordingFailureAlerter(),
+            timeProvider);
+
+        await Assert.ThrowsAsync<TransientLeb2Exception>(() =>
+            gate.ExecuteAsync<int>(
+                SessionContext("semesters", "client-a"),
+                _ => throw new TransientLeb2Exception("Temporary failure.")));
+
+        await Assert.ThrowsAsync<OutboundRequestBackoffException>(() =>
+            gate.ExecuteAsync<int>(
+                SessionContext("semesters", "client-a"),
+                _ => Task.FromResult(1)));
+
+        var result = await gate.ExecuteAsync(
+            SessionContext("semesters", "client-b"),
+            _ => Task.FromResult(2));
+
+        Assert.Equal(2, result);
+    }
+
+    [Fact]
+    public async Task SessionSuccess_ClearsOnlyItsOwnFailureState()
+    {
+        var timeProvider = new ManualTimeProvider();
+        using var gate = CreateGate(
+            new RecordingFailureAlerter(),
+            timeProvider);
+
+        await Assert.ThrowsAsync<TransientLeb2Exception>(() =>
+            gate.ExecuteAsync<int>(
+                SessionContext("semesters", "client-a"),
+                _ => throw new TransientLeb2Exception("Temporary failure.")));
+        await Assert.ThrowsAsync<TransientLeb2Exception>(() =>
+            gate.ExecuteAsync<int>(
+                SessionContext("semesters", "client-b"),
+                _ => throw new TransientLeb2Exception("Temporary failure.")));
+
+        timeProvider.Advance(TimeSpan.FromSeconds(1));
+
+        await Assert.ThrowsAsync<TransientLeb2Exception>(() =>
+            gate.ExecuteAsync<int>(
+                SessionContext("semesters", "client-b"),
+                _ => throw new TransientLeb2Exception("Temporary failure.")));
+
+        var result = await gate.ExecuteAsync(
+            SessionContext("semesters", "client-a"),
+            _ => Task.FromResult(1));
+
+        Assert.Equal(1, result);
+        await Assert.ThrowsAsync<OutboundRequestBackoffException>(() =>
+            gate.ExecuteAsync<int>(
+                SessionContext("semesters", "client-b"),
+                _ => Task.FromResult(2)));
+    }
+
+    [Fact]
+    public async Task SessionExpired_DoesNotCreateBackoff()
+    {
+        using var gate = CreateGate(
+            new RecordingFailureAlerter(),
+            new ManualTimeProvider());
+        var context = SessionContext("semesters", "client-a");
+
+        await Assert.ThrowsAsync<SessionExpiredException>(() =>
+            gate.ExecuteAsync<int>(
+                context,
+                _ => throw new SessionExpiredException()));
+
+        var result = await gate.ExecuteAsync(
+            context,
+            _ => Task.FromResult(42));
+
+        Assert.Equal(42, result);
+    }
+
+    [Fact]
+    public async Task BrowserAutomationFailure_DoesNotCreateBackoff()
+    {
+        using var gate = CreateGate(
+            new RecordingFailureAlerter(),
+            new ManualTimeProvider());
+        var context = SessionContext("semesters", "client-a");
+
+        await Assert.ThrowsAsync<BrowserAutomationException>(() =>
+            gate.ExecuteAsync<int>(
+                context,
+                _ => throw new BrowserAutomationException(
+                    "navigate-class-page",
+                    "Browser automation failed.",
+                    new InvalidOperationException("Synthetic failure."))));
+
+        var result = await gate.ExecuteAsync(
+            context,
+            _ => Task.FromResult(42));
+
+        Assert.Equal(42, result);
+    }
+
+    [Fact]
+    public async Task SessionBackoffs_HealthSnapshotAggregatesWithoutClientKeys()
+    {
+        var timeProvider = new ManualTimeProvider();
+        using var gate = CreateGate(
+            new RecordingFailureAlerter(),
+            timeProvider);
+
+        await Assert.ThrowsAsync<TransientLeb2Exception>(() =>
+            gate.ExecuteAsync<int>(
+                SessionContext("semesters", "client-a"),
+                _ => throw new TransientLeb2Exception("Temporary failure.")));
+        timeProvider.Advance(TimeSpan.FromSeconds(1));
+        await Assert.ThrowsAsync<TransientLeb2Exception>(() =>
+            gate.ExecuteAsync<int>(
+                SessionContext("semesters", "client-b"),
+                _ => throw new TransientLeb2Exception("Temporary failure.")));
+
+        await Assert.ThrowsAsync<TransientLeb2Exception>(() =>
+            gate.ExecuteAsync<int>(
+                SessionContext("semesters", "client-a"),
+                _ => throw new TransientLeb2Exception("Temporary failure.")));
+
+        var snapshot = gate.GetSnapshot();
+        var semesters = Assert.Single(
+            snapshot.Endpoints,
+            endpoint => endpoint.Name == Leb2OutboundEndpoints.Semesters);
+        var serializedSnapshot = JsonSerializer.Serialize(snapshot);
+
+        Assert.NotNull(semesters.RetryAt);
+        Assert.Equal(2, semesters.RetryAfterSeconds);
+        Assert.DoesNotContain("client-a", serializedSnapshot);
+        Assert.DoesNotContain("client-b", serializedSnapshot);
+    }
+
+    [Fact]
+    public async Task NonSessionBackoff_RemainsGlobal()
+    {
+        using var gate = CreateGate(
+            new RecordingFailureAlerter(),
+            new ManualTimeProvider());
+
+        await Assert.ThrowsAsync<TransientLeb2Exception>(() =>
+            gate.ExecuteAsync<int>(
+                Context("activities", "client-a"),
+                _ => throw new TransientLeb2Exception("Temporary failure.")));
+
+        await Assert.ThrowsAsync<OutboundRequestBackoffException>(() =>
+            gate.ExecuteAsync<int>(
+                Context("activities", "client-b"),
+                _ => Task.FromResult(1)));
+    }
+
     private static OutboundRequestGate CreateGate(
         IFailureAlerter alerter,
         TimeProvider timeProvider,
@@ -381,6 +537,16 @@ public class OutboundRequestGateTests
         string clientKey)
     {
         return new OutboundRequestContext(endpoint, clientKey);
+    }
+
+    private static OutboundRequestContext SessionContext(
+        string endpoint,
+        string clientKey)
+    {
+        return new OutboundRequestContext(
+            endpoint,
+            clientKey,
+            UsesSessionCredential: true);
     }
 
     private static Task AssertStructuralFailureAsync(

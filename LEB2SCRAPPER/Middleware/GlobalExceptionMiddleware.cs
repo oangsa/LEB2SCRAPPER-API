@@ -46,6 +46,7 @@ public class GlobalExceptionMiddleware
         catch (Exception ex)
         {
             var logException = ex is AccessKeyDatabaseException
+                or BrowserAutomationException
                 ? ex
                 : ex.GetBaseException();
             var accessKey = accessKeyContext.Current?.KeyId.ToString();
@@ -206,6 +207,12 @@ public class GlobalExceptionMiddleware
                 break;
 
             case TransientLeb2Exception:
+                response.Message = "LEB2 is temporarily unavailable.";
+                response.ResponseCode = ApiErrorCodes.Leb2Unavailable;
+                context.Response.StatusCode = (int)HttpStatusCode.ServiceUnavailable;
+                break;
+
+            case BrowserAutomationException:
                 response.Message = "LEB2 is temporarily unavailable.";
                 response.ResponseCode = ApiErrorCodes.Leb2Unavailable;
                 context.Response.StatusCode = (int)HttpStatusCode.ServiceUnavailable;

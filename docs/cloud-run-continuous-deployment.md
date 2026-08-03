@@ -21,8 +21,8 @@ The workflow applies these settings on every deployment:
 | Setting | Value |
 | --- | --- |
 | Port | `8080` |
-| CPU | `1` |
-| Memory | `1 GiB` |
+| CPU | `2` |
+| Memory | `4 GiB` |
 | Maximum concurrency per instance | `2` |
 | Request timeout | `300 seconds` |
 | Minimum instances | `0` |

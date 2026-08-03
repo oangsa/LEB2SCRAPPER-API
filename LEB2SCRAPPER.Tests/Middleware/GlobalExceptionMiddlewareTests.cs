@@ -35,6 +35,37 @@ public class GlobalExceptionMiddlewareTests
     }
 
     [Fact]
+    public async Task BrowserAutomationFailure_ReturnsExistingUnavailableResponse()
+    {
+        var (context, response) = await InvokeAsync(
+            new BrowserAutomationException(
+                "create-driver",
+                "Browser automation failed.",
+                new InvalidOperationException("Synthetic failure.")));
+
+        Assert.Equal(StatusCodes.Status503ServiceUnavailable, context.Response.StatusCode);
+        Assert.Equal(ApiErrorCodes.Leb2Unavailable, response.ResponseCode);
+    }
+
+    [Fact]
+    public async Task BrowserAutomationFailure_LogsSafeWrapperWithoutInnerDetails()
+    {
+        const string secret = "fake-cookie-value";
+        var logger = new CapturingLogger();
+
+        await InvokeAsync(
+            new BrowserAutomationException(
+                "configure-cookie-header",
+                "Browser automation failed.",
+                new InvalidOperationException($"Cookie: {secret}")),
+            logger);
+
+        var message = Assert.IsType<string>(logger.Message);
+        Assert.Contains(nameof(BrowserAutomationException), message);
+        Assert.DoesNotContain(secret, message);
+    }
+
+    [Fact]
     public async Task WrappedTransientFailure_LogsRedactedBaseCauseAndRetainsUnavailableResponse()
     {
         const string sessionValue = "fake-leb2-session-value";

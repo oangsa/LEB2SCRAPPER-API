@@ -183,10 +183,17 @@ builder.Configuration
     .GetSection("ActivityResultCache")
     .Bind(activityResultCacheOptions);
 
+var scrapingOptions = new ScrapingOptions();
+builder.Configuration
+    .GetSection("Scraping")
+    .Bind(scrapingOptions);
+scrapingOptions.Validate();
+
 builder.Services.AddSingleton(outboundRequestGateOptions);
 builder.Services.AddSingleton(emailFailureAlertOptions);
 builder.Services.AddSingleton(structuralScrapeCacheOptions);
 builder.Services.AddSingleton(activityResultCacheOptions);
+builder.Services.AddSingleton(scrapingOptions);
 builder.Services.AddSingleton<TimeProvider>(TimeProvider.System);
 builder.Services.AddSingleton<IFailureAlerter, EmailFailureAlerter>();
 builder.Services.AddSingleton<IClientFingerprintProvider, HmacClientFingerprintProvider>();

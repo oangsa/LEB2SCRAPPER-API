@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using LEB2SCRAPPER.Contracts.Repository;
 using LEB2SCRAPPER.Entity.Exceptions.Leb2Integration;
 using LEB2SCRAPPER.Entity.Exceptions.ScrapingCustomException;
@@ -9,6 +10,8 @@ using LEB2SCRAPPER.Repository.Parsing;
 using OpenQA.Selenium;
 using OpenQA.Selenium.Chrome;
 using OpenQA.Selenium.Support.UI;
+using Microsoft.Extensions.Logging;
+using MicrosoftLogLevel = Microsoft.Extensions.Logging.LogLevel;
 
 namespace LEB2SCRAPPER.Repository.Master;
 
@@ -22,16 +25,22 @@ public class ScrapingRepository : IScrapingRepository
     private readonly IOutboundRequestGate _outboundRequestGate;
     private readonly IClientFingerprintProvider _clientFingerprintProvider;
     private readonly IStructuralScrapeCache _structuralScrapeCache;
+    private readonly ScrapingOptions _scrapingOptions;
+    private readonly ILogger<ScrapingRepository> _logger;
     private readonly Leb2RenderedPageParser _renderedPageParser = new();
 
     public ScrapingRepository(
         IOutboundRequestGate outboundRequestGate,
         IClientFingerprintProvider clientFingerprintProvider,
-        IStructuralScrapeCache structuralScrapeCache)
+        IStructuralScrapeCache structuralScrapeCache,
+        ScrapingOptions scrapingOptions,
+        ILogger<ScrapingRepository> logger)
     {
         _outboundRequestGate = outboundRequestGate;
         _clientFingerprintProvider = clientFingerprintProvider;
         _structuralScrapeCache = structuralScrapeCache;
+        _scrapingOptions = scrapingOptions;
+        _logger = logger;
         _chromeOptions.AddArgument("--headless=new");
         _chromeOptions.AddArgument("--disable-gpu");
         _chromeOptions.AddArgument("--no-sandbox");
@@ -122,6 +131,7 @@ public class ScrapingRepository : IScrapingRepository
         CancellationToken cancellationToken)
     {
         DriverLease? driverLease = null;
+        var stage = "create-driver";
 
         try
         {
@@ -134,8 +144,10 @@ public class ScrapingRepository : IScrapingRepository
             cancellationToken.ThrowIfCancellationRequested();
             var wait = new WebDriverWait(driver, ElementWaitTimeout);
 
+            stage = "navigate-login";
             await driver.Navigate().GoToUrlAsync(LoginUrl).WaitAsync(cancellationToken);
 
+            stage = "wait-login-form";
             try
             {
                 await RunDriverOperationAsync(
@@ -160,6 +172,7 @@ public class ScrapingRepository : IScrapingRepository
                     exception);
             }
 
+            stage = "submit-login";
             await RunDriverOperationAsync(
                 () =>
                 {
@@ -176,6 +189,7 @@ public class ScrapingRepository : IScrapingRepository
 
             try
             {
+                stage = "wait-login-redirect";
                 await RunDriverOperationAsync(
                     () => wait.Until(d => IsAppHost(d.Url)),
                     cancellationToken);
@@ -191,6 +205,7 @@ public class ScrapingRepository : IScrapingRepository
                     exception);
             }
 
+            stage = "read-session-cookie";
             var cookieString = await RunDriverOperationAsync(
                 () => string.Join(
                     "; ",
@@ -219,8 +234,10 @@ public class ScrapingRepository : IScrapingRepository
         }
         catch (WebDriverException exception)
         {
-            throw new TransientLeb2Exception(
+            throw MapWebDriverException(
+                stage,
                 "The browser could not complete the LEB2 login request.",
+                "Browser automation failed during the LEB2 login request.",
                 exception);
         }
         finally
@@ -234,33 +251,89 @@ public class ScrapingRepository : IScrapingRepository
         CancellationToken cancellationToken)
     {
         DriverLease? driverLease = null;
+        var startedAt = Stopwatch.GetTimestamp();
+        var stage = "create-driver";
+        var driverCreated = false;
+        var navigationCompleted = false;
+
+        _logger.LogInformation(
+            "LEB2 semester scrape started. Trace identifier: {TraceIdentifier}",
+            GetTraceIdentifier());
 
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
             driverLease = new DriverLease(CreateDriver());
+            driverCreated = true;
             var driver = driverLease.Driver;
             using var cancellationRegistration = cancellationToken.Register(
                 static state => ((DriverLease)state!).Dispose(),
                 driverLease);
             cancellationToken.ThrowIfCancellationRequested();
+            stage = "configure-cookie-header";
             SetCookieHeader(driver, token);
 
+            stage = "navigate-class-page";
             await driver.Navigate()
                 .GoToUrlAsync($"{BaseUrl}/class")
                 .WaitAsync(cancellationToken);
+            navigationCompleted = true;
+
+            stage = "validate-session";
             EnsureSessionIsActive(driver);
 
-            return await ExtractSemestersAsync(driver, cancellationToken);
+            var semesters = await ExtractSemestersAsync(
+                driver,
+                cancellationToken,
+                value => stage = value);
+
+            _logger.LogInformation(
+                "LEB2 semester scrape completed in {ElapsedMilliseconds} ms. "
+                + "Trace identifier: {TraceIdentifier}",
+                Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds,
+                GetTraceIdentifier());
+
+            return semesters;
         }
         catch (WebDriverException) when (cancellationToken.IsCancellationRequested)
         {
             throw new OperationCanceledException(cancellationToken);
         }
+        catch (SessionExpiredException exception)
+        {
+            LogSemesterScrapeFailure(
+                MicrosoftLogLevel.Warning,
+                stage,
+                exception,
+                startedAt,
+                driverCreated,
+                navigationCompleted);
+            throw;
+        }
+        catch (StructuralParseException exception)
+        {
+            LogSemesterScrapeFailure(
+                MicrosoftLogLevel.Error,
+                stage,
+                exception,
+                startedAt,
+                driverCreated,
+                navigationCompleted);
+            throw;
+        }
         catch (WebDriverException exception)
         {
-            throw new TransientLeb2Exception(
+            LogSemesterScrapeFailure(
+                MicrosoftLogLevel.Error,
+                stage,
+                exception,
+                startedAt,
+                driverCreated,
+                navigationCompleted);
+            throw MapWebDriverException(
+                stage,
                 "The browser could not complete the LEB2 semester request.",
+                "Browser automation failed during the LEB2 semester request.",
                 exception);
         }
         finally
@@ -275,6 +348,7 @@ public class ScrapingRepository : IScrapingRepository
         CancellationToken cancellationToken)
     {
         DriverLease? driverLease = null;
+        var stage = "create-driver";
 
         try
         {
@@ -285,13 +359,17 @@ public class ScrapingRepository : IScrapingRepository
                 static state => ((DriverLease)state!).Dispose(),
                 driverLease);
             cancellationToken.ThrowIfCancellationRequested();
+            stage = "configure-cookie-header";
             SetCookieHeader(driver, token);
 
+            stage = "navigate-class-page";
             await driver.Navigate().GoToUrlAsync(
                     $"{BaseUrl}/class?semester_id={semesterId}")
                 .WaitAsync(cancellationToken);
+            stage = "validate-session";
             EnsureSessionIsActive(driver);
 
+            stage = "wait-class-cards";
             return await ExtractClassesAsync(driver, cancellationToken);
         }
         catch (WebDriverException) when (cancellationToken.IsCancellationRequested)
@@ -300,8 +378,10 @@ public class ScrapingRepository : IScrapingRepository
         }
         catch (WebDriverException exception)
         {
-            throw new TransientLeb2Exception(
+            throw MapWebDriverException(
+                stage,
                 "The browser could not complete the LEB2 class request.",
+                "Browser automation failed during the LEB2 class request.",
                 exception);
         }
         finally
@@ -388,40 +468,108 @@ public class ScrapingRepository : IScrapingRepository
 
     private async Task<List<SemesterInfo>> ExtractSemestersAsync(
         IWebDriver driver,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Action<string> setStage)
     {
-        try
-        {
-            var wait = new WebDriverWait(driver, ElementWaitTimeout);
-            await RunDriverOperationAsync(
-                () => wait.Until(d =>
+        setStage("wait-semester-links");
+        await WaitForUsableSemesterLinkAsync(
+            () => RunDriverOperationAsync(
+                () =>
                 {
-                    var links = d.FindElements(By.CssSelector("a[href]"));
+                    EnsureSessionIsActive(driver);
+                    var links = driver.FindElements(By.CssSelector("a[href]"));
                     return links.Any(link =>
                         Leb2RenderedPageParser.IsUsableSemesterLink(
                             link.GetAttribute("href"),
                             link.Text));
-                }),
-                cancellationToken);
-        }
-        catch (WebDriverTimeoutException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw new OperationCanceledException(cancellationToken);
-        }
-        catch (WebDriverTimeoutException exception)
-        {
-            throw new StructuralParseException(
-                "semesters.semester_links",
-                "The semester links no longer match the expected structure.",
-                exception);
-        }
+                },
+                cancellationToken),
+            _scrapingOptions.SemesterRenderTimeout,
+            cancellationToken);
 
+        setStage("read-page-source");
         var pageSource = await RunDriverOperationAsync(
             () => driver.PageSource,
             cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
 
+        setStage("parse-semesters");
         return _renderedPageParser.ParseSemesters(pageSource);
+    }
+
+    internal static async Task WaitForUsableSemesterLinkAsync(
+        Func<Task<bool>> condition,
+        TimeSpan timeout,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(condition);
+
+        var startedAt = Stopwatch.GetTimestamp();
+        var pollInterval = TimeSpan.FromMilliseconds(100);
+
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (await condition())
+            {
+                return;
+            }
+
+            var remaining = timeout - Stopwatch.GetElapsedTime(startedAt);
+            if (remaining <= TimeSpan.Zero)
+            {
+                throw new StructuralParseException(
+                    "semesters.semester_links",
+                    "The semester links no longer match the expected structure.",
+                    new TimeoutException(
+                        "The semester links did not render before the wait expired."));
+            }
+
+            await Task.Delay(
+                remaining < pollInterval ? remaining : pollInterval,
+                cancellationToken);
+        }
+    }
+
+    private static Exception MapWebDriverException(
+        string stage,
+        string transientMessage,
+        string browserMessage,
+        WebDriverException exception)
+    {
+        return ScrapingFailureClassifier.Classify(stage, exception)
+            is ScrapingFailureKind.TransientLeb2
+            ? new TransientLeb2Exception(transientMessage, exception)
+            : new BrowserAutomationException(stage, browserMessage, exception);
+    }
+
+    private void LogSemesterScrapeFailure(
+        MicrosoftLogLevel logLevel,
+        string stage,
+        Exception exception,
+        long startedAt,
+        bool driverCreated,
+        bool navigationCompleted)
+    {
+        _logger.Log(
+            logLevel,
+            "LEB2 semester scrape failed at stage {Stage} with {ExceptionType}. "
+            + "Elapsed milliseconds: {ElapsedMilliseconds}. "
+            + "Driver created: {DriverCreated}. "
+            + "Navigation completed: {NavigationCompleted}. "
+            + "Trace identifier: {TraceIdentifier}",
+            stage,
+            exception.GetType().Name,
+            Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds,
+            driverCreated,
+            navigationCompleted,
+            GetTraceIdentifier());
+    }
+
+    private static string GetTraceIdentifier()
+    {
+        return Activity.Current?.TraceId.ToString() ?? "unavailable";
     }
 
     private async Task<List<ClassInfo>?> ExtractClassesAsync(
