@@ -33,7 +33,7 @@ The workflow applies these settings on every deployment:
 | Semester semantic render wait | Application default: 30 seconds (`Scraping__SemesterRenderTimeoutSeconds`, bounded 1–60) |
 | Legacy route aliases | Enabled during migration (`ApiVersioning__LegacyRoutesEnabled=true`) |
 | Client compatibility enforcement | Disabled during rollout (`ClientCompatibility__EnforcementEnabled=false`) |
-| Device binding persistence/enforcement | Disabled during rollout (`DeviceBinding__Enabled=false`, `DeviceBinding__EnforcementEnabled=false`) |
+| Device binding persistence/enforcement | Persistence on, enforcement off during rollout (`DeviceBinding__Enabled=true`, `DeviceBinding__EnforcementEnabled=false`) |
 
 The conservative memory and concurrency values account for requests that launch
 headless Chromium. Cloud Run request concurrency is the number of simultaneous HTTP

@@ -59,7 +59,7 @@ jobs:
             ASPNETCORE_FORWARDEDHEADERS_ENABLED=true
             ApiVersioning__LegacyRoutesEnabled=true
             ClientCompatibility__EnforcementEnabled=false
-            DeviceBinding__Enabled=false
+            DeviceBinding__Enabled=true
             DeviceBinding__EnforcementEnabled=false
           flags: >-
             --port=8080
@@ -69,7 +69,7 @@ jobs:
             --min-instances=0
             --max-instances=1
             --service-account=${{ vars.GCP_RUNTIME_SERVICE_ACCOUNT }}
-            --update-secrets=ConnectionStrings__Production=leb2scrapper-api-supabase-connection:latest
+            --update-secrets=ConnectionStrings__Production=leb2scrapper-api-supabase-connection:latest,DeviceBinding__HmacSecret=leb2scrapper-api-device-hmac:latest
 
       - name: Add deployment URL to summary
         run: |
