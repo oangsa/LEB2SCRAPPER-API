@@ -22,6 +22,7 @@ namespace LEB2SCRAPPER.Repository.Core
             IStructuralScrapeCache structuralScrapeCache,
             IActivityResultCache activityResultCache,
             IAccessKeyRepository accessKeyRepository,
+            ScrapingOptions scrapingOptions,
             ILogger<ScrapingRepository> scrapingRepositoryLogger)
         {
             _scrapingRepository = new Lazy<IScrapingRepository>(
@@ -29,6 +30,7 @@ namespace LEB2SCRAPPER.Repository.Core
                     outboundRequestGate,
                     clientFingerprintProvider,
                     structuralScrapeCache,
+                    scrapingOptions,
                     scrapingRepositoryLogger));
             _activityRepository = new Lazy<IActivityRepository>(
                 () => new ActivityRepository(

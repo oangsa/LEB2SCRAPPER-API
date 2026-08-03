@@ -63,8 +63,8 @@ jobs:
             DeviceBinding__EnforcementEnabled=false
           flags: >-
             --port=8080
-            --cpu=1
-            --memory=1Gi
+            --cpu=2
+            --memory=4Gi
             --concurrency=2
             --min-instances=0
             --max-instances=1

@@ -25,6 +25,7 @@ public class ScrapingRepository : IScrapingRepository
     private readonly IOutboundRequestGate _outboundRequestGate;
     private readonly IClientFingerprintProvider _clientFingerprintProvider;
     private readonly IStructuralScrapeCache _structuralScrapeCache;
+    private readonly ScrapingOptions _scrapingOptions;
     private readonly ILogger<ScrapingRepository> _logger;
     private readonly Leb2RenderedPageParser _renderedPageParser = new();
 
@@ -32,11 +33,13 @@ public class ScrapingRepository : IScrapingRepository
         IOutboundRequestGate outboundRequestGate,
         IClientFingerprintProvider clientFingerprintProvider,
         IStructuralScrapeCache structuralScrapeCache,
+        ScrapingOptions scrapingOptions,
         ILogger<ScrapingRepository> logger)
     {
         _outboundRequestGate = outboundRequestGate;
         _clientFingerprintProvider = clientFingerprintProvider;
         _structuralScrapeCache = structuralScrapeCache;
+        _scrapingOptions = scrapingOptions;
         _logger = logger;
         _chromeOptions.AddArgument("--headless=new");
         _chromeOptions.AddArgument("--disable-gpu");
@@ -128,6 +131,7 @@ public class ScrapingRepository : IScrapingRepository
         CancellationToken cancellationToken)
     {
         DriverLease? driverLease = null;
+        var stage = "create-driver";
 
         try
         {
@@ -140,8 +144,10 @@ public class ScrapingRepository : IScrapingRepository
             cancellationToken.ThrowIfCancellationRequested();
             var wait = new WebDriverWait(driver, ElementWaitTimeout);
 
+            stage = "navigate-login";
             await driver.Navigate().GoToUrlAsync(LoginUrl).WaitAsync(cancellationToken);
 
+            stage = "wait-login-form";
             try
             {
                 await RunDriverOperationAsync(
@@ -166,6 +172,7 @@ public class ScrapingRepository : IScrapingRepository
                     exception);
             }
 
+            stage = "submit-login";
             await RunDriverOperationAsync(
                 () =>
                 {
@@ -182,6 +189,7 @@ public class ScrapingRepository : IScrapingRepository
 
             try
             {
+                stage = "wait-login-redirect";
                 await RunDriverOperationAsync(
                     () => wait.Until(d => IsAppHost(d.Url)),
                     cancellationToken);
@@ -197,6 +205,7 @@ public class ScrapingRepository : IScrapingRepository
                     exception);
             }
 
+            stage = "read-session-cookie";
             var cookieString = await RunDriverOperationAsync(
                 () => string.Join(
                     "; ",
@@ -225,8 +234,9 @@ public class ScrapingRepository : IScrapingRepository
         }
         catch (WebDriverException exception)
         {
-            throw new BrowserAutomationException(
-                "cookie-login",
+            throw MapWebDriverException(
+                stage,
+                "The browser could not complete the LEB2 login request.",
                 "Browser automation failed during the LEB2 login request.",
                 exception);
         }
@@ -320,8 +330,9 @@ public class ScrapingRepository : IScrapingRepository
                 startedAt,
                 driverCreated,
                 navigationCompleted);
-            throw new BrowserAutomationException(
+            throw MapWebDriverException(
                 stage,
+                "The browser could not complete the LEB2 semester request.",
                 "Browser automation failed during the LEB2 semester request.",
                 exception);
         }
@@ -337,6 +348,7 @@ public class ScrapingRepository : IScrapingRepository
         CancellationToken cancellationToken)
     {
         DriverLease? driverLease = null;
+        var stage = "create-driver";
 
         try
         {
@@ -347,13 +359,17 @@ public class ScrapingRepository : IScrapingRepository
                 static state => ((DriverLease)state!).Dispose(),
                 driverLease);
             cancellationToken.ThrowIfCancellationRequested();
+            stage = "configure-cookie-header";
             SetCookieHeader(driver, token);
 
+            stage = "navigate-class-page";
             await driver.Navigate().GoToUrlAsync(
                     $"{BaseUrl}/class?semester_id={semesterId}")
                 .WaitAsync(cancellationToken);
+            stage = "validate-session";
             EnsureSessionIsActive(driver);
 
+            stage = "wait-class-cards";
             return await ExtractClassesAsync(driver, cancellationToken);
         }
         catch (WebDriverException) when (cancellationToken.IsCancellationRequested)
@@ -362,8 +378,9 @@ public class ScrapingRepository : IScrapingRepository
         }
         catch (WebDriverException exception)
         {
-            throw new BrowserAutomationException(
-                "class-scrape",
+            throw MapWebDriverException(
+                stage,
+                "The browser could not complete the LEB2 class request.",
                 "Browser automation failed during the LEB2 class request.",
                 exception);
         }
@@ -455,31 +472,20 @@ public class ScrapingRepository : IScrapingRepository
         Action<string> setStage)
     {
         setStage("wait-semester-links");
-        try
-        {
-            var wait = new WebDriverWait(driver, ElementWaitTimeout);
-            await RunDriverOperationAsync(
-                () => wait.Until(d =>
+        await WaitForUsableSemesterLinkAsync(
+            () => RunDriverOperationAsync(
+                () =>
                 {
-                    var links = d.FindElements(By.CssSelector("a[href]"));
+                    EnsureSessionIsActive(driver);
+                    var links = driver.FindElements(By.CssSelector("a[href]"));
                     return links.Any(link =>
                         Leb2RenderedPageParser.IsUsableSemesterLink(
                             link.GetAttribute("href"),
                             link.Text));
-                }),
-                cancellationToken);
-        }
-        catch (WebDriverTimeoutException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw new OperationCanceledException(cancellationToken);
-        }
-        catch (WebDriverTimeoutException exception)
-        {
-            throw new StructuralParseException(
-                "semesters.semester_links",
-                "The semester links no longer match the expected structure.",
-                exception);
-        }
+                },
+                cancellationToken),
+            _scrapingOptions.SemesterRenderTimeout,
+            cancellationToken);
 
         setStage("read-page-source");
         var pageSource = await RunDriverOperationAsync(
@@ -489,6 +495,53 @@ public class ScrapingRepository : IScrapingRepository
 
         setStage("parse-semesters");
         return _renderedPageParser.ParseSemesters(pageSource);
+    }
+
+    internal static async Task WaitForUsableSemesterLinkAsync(
+        Func<Task<bool>> condition,
+        TimeSpan timeout,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(condition);
+
+        var startedAt = Stopwatch.GetTimestamp();
+        var pollInterval = TimeSpan.FromMilliseconds(100);
+
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (await condition())
+            {
+                return;
+            }
+
+            var remaining = timeout - Stopwatch.GetElapsedTime(startedAt);
+            if (remaining <= TimeSpan.Zero)
+            {
+                throw new StructuralParseException(
+                    "semesters.semester_links",
+                    "The semester links no longer match the expected structure.",
+                    new TimeoutException(
+                        "The semester links did not render before the wait expired."));
+            }
+
+            await Task.Delay(
+                remaining < pollInterval ? remaining : pollInterval,
+                cancellationToken);
+        }
+    }
+
+    private static Exception MapWebDriverException(
+        string stage,
+        string transientMessage,
+        string browserMessage,
+        WebDriverException exception)
+    {
+        return ScrapingFailureClassifier.Classify(stage, exception)
+            is ScrapingFailureKind.TransientLeb2
+            ? new TransientLeb2Exception(transientMessage, exception)
+            : new BrowserAutomationException(stage, browserMessage, exception);
     }
 
     private void LogSemesterScrapeFailure(
