@@ -48,6 +48,28 @@ public class Leb2RenderedPageParserTests
             Leb2RenderedPageParser.IsUsableSemesterLink(href, text));
     }
 
+    [Theory]
+    [InlineData("<a href=\"/class\">Home</a>", false)]
+    [InlineData("<a href=\"/class?semester_id=46\"></a>", false)]
+    [InlineData("<a href=\"/class?semester_id=46\">1/2026</a>", true)]
+    [InlineData(
+        "<div style=\"display:none\"><a href=\"/class?semester_id=46\">1/2026</a></div>",
+        true)]
+    public void HasUsableSemesterLink_MatchesWhatParseSemestersAccepts(
+        string body,
+        bool expected)
+    {
+        var parser = new Leb2RenderedPageParser();
+        var html = $"<html><body>{body}</body></html>";
+
+        Assert.Equal(expected, parser.HasUsableSemesterLink(html));
+
+        if (expected)
+        {
+            Assert.Single(parser.ParseSemesters(html));
+        }
+    }
+
     [Fact]
     public void ParseSemesters_MapsAbsoluteHrefAndVisibleName()
     {

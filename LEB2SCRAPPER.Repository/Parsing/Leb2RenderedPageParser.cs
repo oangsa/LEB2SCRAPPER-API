@@ -88,6 +88,15 @@ internal sealed class Leb2RenderedPageParser
         return semesters;
     }
 
+    public bool HasUsableSemesterLink(string pageSource)
+    {
+        return _htmlParser.ParseDocument(pageSource)
+            .QuerySelectorAll("a[href]")
+            .Any(link => IsUsableSemesterLink(
+                link.GetAttribute("href"),
+                link.TextContent));
+    }
+
     internal static bool TryGetSemesterId(string? href, out int? parsedId)
     {
         parsedId = null;

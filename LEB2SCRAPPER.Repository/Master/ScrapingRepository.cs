@@ -45,9 +45,9 @@ public class ScrapingRepository : IScrapingRepository
         _chromeOptions.AddArgument("--disable-gpu");
         _chromeOptions.AddArgument("--no-sandbox");
         _chromeOptions.AddArgument("--window-size=1920,1080");
-        _chromeOptions.AddArgument("--single-process");
         _chromeOptions.AddArgument("--no-zygote");
         _chromeOptions.AddArgument("--disable-dev-shm-usage");
+        _chromeOptions.AddArgument("--blink-settings=imagesEnabled=false");
         _chromeOptions.AddArgument(
             "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             + "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/");
@@ -390,6 +390,8 @@ public class ScrapingRepository : IScrapingRepository
         }
     }
 
+    // ponytail: one cold Chromium start per request (~seconds); pool drivers only if
+    // the startup cost, not the LEB2 render wait, becomes the dominant latency.
     private ChromeDriver CreateDriver()
     {
         var driverService = ChromeDriverService.CreateDefaultService();
@@ -472,25 +474,19 @@ public class ScrapingRepository : IScrapingRepository
         Action<string> setStage)
     {
         setStage("wait-semester-links");
+        var pageSource = string.Empty;
         await WaitForUsableSemesterLinkAsync(
             () => RunDriverOperationAsync(
                 () =>
                 {
                     EnsureSessionIsActive(driver);
-                    var links = driver.FindElements(By.CssSelector("a[href]"));
-                    return links.Any(link =>
-                        Leb2RenderedPageParser.IsUsableSemesterLink(
-                            link.GetAttribute("href"),
-                            link.Text));
+                    pageSource = driver.PageSource;
+                    return _renderedPageParser.HasUsableSemesterLink(pageSource);
                 },
                 cancellationToken),
             _scrapingOptions.SemesterRenderTimeout,
             cancellationToken);
 
-        setStage("read-page-source");
-        var pageSource = await RunDriverOperationAsync(
-            () => driver.PageSource,
-            cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
 
         setStage("parse-semesters");
