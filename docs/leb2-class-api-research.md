@@ -80,3 +80,16 @@ calls safely**. Doing so would require guessing at least the endpoint, request
 contract, and response mapping. The confirmed scraper-first design therefore
 keeps Selenium-based semester/class discovery and treats Chromium-backed cache
 misses separately from the warm snapshot latency target.
+
+## Current repository implementation note
+
+The repository continues to use Selenium for authenticated semester/class discovery;
+this does not change the research conclusion about an unverified direct API contract.
+After navigation, semester discovery polls for a usable semantic semester link while
+the SPA renders. The bounded wait is configured by
+`Scraping:SemesterRenderTimeoutSeconds` and defaults to 30 seconds, with a 1–60 second
+validation bound. Session redirects remain session-expiration failures.
+
+Browser startup/crash/CDP/configuration failures are classified separately from
+navigation/page-load/network failures. The former do not activate LEB2 backoff; the
+latter use the existing endpoint/session-scoped transient backoff behavior.

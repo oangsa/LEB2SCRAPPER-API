@@ -501,13 +501,21 @@ session to pause another user's session:
 - Client fingerprints, cookies, access keys, and credentials are never included
   in API responses or health output.
 
-For `/api/v1/Semester`, the scraper waits up to the bounded configured element
-wait for at least one usable semester link after navigation and session
-validation. If that semantic DOM condition expires, the API returns
+For `/api/v1/Semester`, the scraper waits up to the bounded configured semester
+render timeout for at least one usable semester link after navigation and session
+validation. The setting is `Scraping:SemesterRenderTimeoutSeconds`
+(`Scraping__SemesterRenderTimeoutSeconds` as an environment variable), defaulting
+to 30 seconds and bounded to 1–60 seconds. This setting applies only to the
+semantic semester-link render wait; it does not change unrelated WebDriver
+command, page-load, or class-render timeouts.
+
+If that semantic DOM condition expires, the API returns
 `502 SCRAPE_RESPONSE_CHANGED` and retains structural-failure tracking and alert
-threshold behavior. A ChromeDriver, Chromium, CDP, navigation, or other WebDriver
-automation failure returns `503 LEB2_UNAVAILABLE` but does not activate upstream
-endpoint backoff.
+threshold behavior. A navigation, page-load, or network failure while reaching
+LEB2 returns `503 LEB2_UNAVAILABLE` and activates the matching backoff scope.
+ChromeDriver/Chromium startup, crash, CDP/configuration, and invalid-driver-state
+failures return `503 LEB2_UNAVAILABLE` without activating upstream backoff.
+Session expiration remains `401 SESSION_EXPIRED` and does not create backoff.
 
 ### Validation error
 

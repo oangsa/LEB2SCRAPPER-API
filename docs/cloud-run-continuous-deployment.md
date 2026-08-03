@@ -30,6 +30,7 @@ The workflow applies these settings on every deployment:
 | Runtime environment | `Production` |
 | Supabase connection | Secret Manager secret `leb2scrapper-api-supabase-connection`, latest enabled version |
 | Canonical API | `/api/v1` |
+| Semester semantic render wait | Application default: 30 seconds (`Scraping__SemesterRenderTimeoutSeconds`, bounded 1–60) |
 | Legacy route aliases | Enabled during migration (`ApiVersioning__LegacyRoutesEnabled=true`) |
 | Client compatibility enforcement | Disabled during rollout (`ClientCompatibility__EnforcementEnabled=false`) |
 | Device binding persistence/enforcement | Disabled during rollout (`DeviceBinding__Enabled=false`, `DeviceBinding__EnforcementEnabled=false`) |
@@ -40,6 +41,14 @@ requests accepted by one instance; it is separate from the process-local
 `OutboundRequestGate`, which allows at most four outbound LEB2 operations globally,
 two per client, and two activity operations in aggregate. The workflow keeps both
 limits unchanged.
+
+The authenticated semester scraper waits for usable semester links after the LEB2
+SPA finishes navigation. It polls the semantic link condition for up to the
+configured semester render timeout and checks session expiration while waiting.
+Navigation/page-load/network failures use the request's applicable backoff scope.
+ChromeDriver/Chromium startup, crash, CDP/configuration, and invalid-driver-state
+failures do not create backoff. A rendered structure that never becomes usable
+returns `502 SCRAPE_RESPONSE_CHANGED`.
 
 This release intentionally runs at most one active Cloud Run instance because the
 structural scrape cache, activity cache, client fingerprints, outbound throttling,

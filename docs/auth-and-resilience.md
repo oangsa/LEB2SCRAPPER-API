@@ -300,7 +300,9 @@ outbound request gate. It:
 
 - caps concurrent LEB2 operations at four globally and two per client;
 - queues at most eight additional operations per client before returning `429`;
-- applies exponential backoff per endpoint;
+- applies exponential backoff per endpoint for non-session requests;
+- keys session-request backoff by endpoint and opaque session fingerprint, so one
+  session cannot pause another session;
 - never caches session cookies or scraped user data;
 - clears backoff after a successful request;
 - does not treat session expiry as a scrape failure;
@@ -320,6 +322,33 @@ routes fingerprint the session cookie; credential-acquisition routes fingerprint
 normalized username in a separate HMAC domain. The random HMAC key exists only for
 the life of the process. Raw cookies, usernames, and plain hashes are not used as
 gate, cache, or alert-correlation keys.
+
+## Selenium rendering and failure classification
+
+Authenticated semester and class discovery uses headless Selenium after successful
+navigation to LEB2. The semester scraper polls the actual usable semester-link
+condition while the SPA renders and checks for session redirect/expiration during
+that wait. It does not use fixed `Thread.Sleep` calls.
+
+`Scraping:SemesterRenderTimeoutSeconds` controls only the semester semantic-render
+wait. It defaults to 30 seconds and is validated between 1 and 60 seconds. The
+environment-variable form is:
+
+```text
+Scraping__SemesterRenderTimeoutSeconds=30
+```
+
+Failure classification is stage-aware:
+
+- Chrome/ChromeDriver startup, browser crash, CDP/configuration, and invalid driver
+  state become `BrowserAutomationException`; they do not create LEB2 backoff.
+- Navigation, page-load, and network failures attributable to reaching LEB2 become
+  `TransientLeb2Exception`; they create backoff in the request's existing scope.
+- An explicit semantic DOM wait timeout becomes `StructuralParseException`; it
+  returns `502 SCRAPE_RESPONSE_CHANGED` and participates in structural-failure
+  correlation.
+- `SessionExpiredException` remains `401 SESSION_EXPIRED` and clears matching
+  failure state without creating backoff.
 
 ## Aggregate activities
 
