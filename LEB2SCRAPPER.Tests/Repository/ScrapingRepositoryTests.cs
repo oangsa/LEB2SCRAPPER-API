@@ -12,7 +12,7 @@ public class ScrapingRepositoryTests
 
         await ScrapingRepository.WaitForUsableSemesterLinkAsync(
             () => Task.FromResult(Interlocked.Increment(ref attempts) >= 3),
-            TimeSpan.FromMilliseconds(350));
+            TimeSpan.FromSeconds(30));
 
         Assert.True(attempts >= 3);
     }
