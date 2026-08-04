@@ -6,9 +6,15 @@ using LEB2SCRAPPER.Entity.Models.Authentication;
 using LEB2SCRAPPER.Entity.Models.Class;
 using LEB2SCRAPPER.Entity.Models.Semester;
 using LEB2SCRAPPER.Entity.Models.Users;
+using LEB2SCRAPPER.Infrastructure.Contracts.AccessKey;
 using LEB2SCRAPPER.Service;
+using LEB2SCRAPPER.Service.Contracts.Core;
 using LEB2SCRAPPER.Service.Contracts.Master;
+using LEB2SCRAPPER.Service.Core;
 using LEB2SCRAPPER.Service.Master;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace LEB2SCRAPPER.Tests.Service;
 
@@ -181,8 +187,57 @@ public class UserServiceTests
                     null)));
     }
 
+    [Fact]
+    public async Task ServiceManagerLogin_RegistersDeviceBindingFromRequestContext()
+    {
+        var accessKeyService = new StubAccessKeyService();
+        var services = new ServiceCollection()
+            .AddScoped<ICoreAdapterManager>(_ => new StubCoreAdapterManager(
+                new StubRepositoryManager(
+                    new UserRepositoryStub
+                    {
+                        User = new User
+                        {
+                            Id = 42,
+                            KmuttId = "student-001",
+                            NameEnglish = "Example",
+                            SurnameEnglish = "Student"
+                        }
+                    })))
+            .AddSingleton<ILogger<ActivityService>>(NullLogger<ActivityService>.Instance)
+            .AddSingleton<IAccessKeyService>(accessKeyService)
+            .AddScoped<DeviceBindingRequestContext>()
+            .AddScoped<IServiceManager, ServiceManager>()
+            .BuildServiceProvider();
+
+        using var scope = services.CreateScope();
+        scope.ServiceProvider
+            .GetRequiredService<DeviceBindingRequestContext>()
+            .Set(new DeviceBindingRequest(
+                "device-1",
+                "Pixel",
+                "android",
+                "15",
+                "0.5.0"));
+
+        await scope.ServiceProvider
+            .GetRequiredService<IServiceManager>()
+            .UserService
+            .GetUserByCredentialsAsync(
+                new Credentials
+                {
+                    Username = "student-001",
+                    Password = "fake-password"
+                },
+                new AccessKeyState(KeyId, null, null, null));
+
+        Assert.Equal("device-1", accessKeyService.DeviceId);
+    }
+
     private sealed class StubAccessKeyService : IAccessKeyService
     {
+        public string? DeviceId { get; private set; }
+
         public Guid? KeyId { get; private set; }
 
         public string? StudentId { get; private set; }
@@ -265,6 +320,23 @@ public class UserServiceTests
             Leb2UserId = leb2UserId;
             Name = name;
             return Task.CompletedTask;
+        }
+
+        public Task RegisterSuccessfulLoginWithDeviceAsync(
+            Guid keyId,
+            string studentId,
+            int leb2UserId,
+            string name,
+            DeviceBindingRequest deviceBinding,
+            CancellationToken cancellationToken = default)
+        {
+            DeviceId = deviceBinding.DeviceId;
+            return RegisterSuccessfulLoginAsync(
+                keyId,
+                studentId,
+                leb2UserId,
+                name,
+                cancellationToken);
         }
     }
 
