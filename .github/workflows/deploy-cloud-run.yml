@@ -59,6 +59,8 @@ jobs:
             ASPNETCORE_FORWARDEDHEADERS_ENABLED=true
             ApiVersioning__LegacyRoutesEnabled=true
             ClientCompatibility__EnforcementEnabled=false
+            ClientCompatibility__MinimumClientVersion=0.5.0
+            ClientCompatibility__LatestClientVersion=0.5.0
             DeviceBinding__Enabled=true
             DeviceBinding__EnforcementEnabled=false
           flags: >-

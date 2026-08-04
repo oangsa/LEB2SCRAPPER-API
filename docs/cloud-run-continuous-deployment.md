@@ -33,6 +33,7 @@ The workflow applies these settings on every deployment:
 | Semester semantic render wait | Application default: 30 seconds (`Scraping__SemesterRenderTimeoutSeconds`, bounded 1–60) |
 | Legacy route aliases | Enabled during migration (`ApiVersioning__LegacyRoutesEnabled=true`) |
 | Client compatibility enforcement | Disabled during rollout (`ClientCompatibility__EnforcementEnabled=false`) |
+| Client compatibility versions | `ClientCompatibility__MinimumClientVersion` / `__LatestClientVersion`, bumped per client release (see below) |
 | Device binding persistence/enforcement | Persistence on, enforcement off during rollout (`DeviceBinding__Enabled=true`, `DeviceBinding__EnforcementEnabled=false`) |
 
 The conservative memory and concurrency values account for requests that launch
@@ -41,6 +42,25 @@ requests accepted by one instance; it is separate from the process-local
 `OutboundRequestGate`, which allows at most four outbound LEB2 operations globally,
 two per client, and two activity operations in aggregate. The workflow keeps both
 limits unchanged.
+
+## Client version bumps per client release
+
+`/api/v1/meta` serves `MinimumClientVersion` and `LatestClientVersion` verbatim, and
+the client decides what to show from them. The update banner fires only in the band
+`minimum <= installed < latest`; below `minimum` the client routes itself to its
+update-required page. Equal values leave an empty band, so no banner can ever appear.
+
+When a client release is published, update the workflow `env_vars`:
+
+- `ClientCompatibility__LatestClientVersion` — the version whose release artifact is
+  already published. Bumping it before publication points the banner at a release
+  page without the build.
+- `ClientCompatibility__MinimumClientVersion` — the oldest version still supported.
+
+Startup validation rejects `MinimumClientVersion > LatestClientVersion`, so raise
+`LatestClientVersion` first. Clients older than the release that introduced the
+compatibility check do not read `/api/v1/meta` at all; enforcement must be enabled
+for `MinimumClientVersion` to reach them.
 
 The authenticated semester scraper waits for usable semester links after the LEB2
 SPA finishes navigation. It polls the semantic link condition for up to the
