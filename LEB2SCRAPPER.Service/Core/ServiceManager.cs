@@ -1,3 +1,4 @@
+using LEB2SCRAPPER.Infrastructure.Contracts.AccessKey;
 using LEB2SCRAPPER.Service.Contracts.Core;
 using LEB2SCRAPPER.Service.Contracts.Master;
 using LEB2SCRAPPER.Service.Master;
@@ -16,13 +17,17 @@ public class ServiceManager : IServiceManager
     public ServiceManager(
         ICoreAdapterManager coreAdapterManager,
         ILogger<ActivityService> activityLogger,
-        IAccessKeyService accessKeyService)
+        IAccessKeyService accessKeyService,
+        DeviceBindingRequestContext? deviceBindingRequestContext = null)
     {
         _accessKeyService = accessKeyService;
         _activityService = new Lazy<IActivityService>(
             () => new ActivityService(coreAdapterManager, activityLogger));
         _userService = new Lazy<IUserService>(
-            () => new UserService(coreAdapterManager, _accessKeyService));
+            () => new UserService(
+                coreAdapterManager,
+                _accessKeyService,
+                deviceBindingRequestContext));
         _classService = new Lazy<IClassService>(() => new ClassService(coreAdapterManager));
         _semesterService = new Lazy<ISemesterService>(() => new SemesterService(coreAdapterManager));
     }
