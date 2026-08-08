@@ -33,7 +33,7 @@ The workflow applies these settings on every deployment:
 | Semester semantic render wait | Application default: 30 seconds (`Scraping__SemesterRenderTimeoutSeconds`, bounded 1–60) |
 | Legacy route aliases | Enabled during migration (`ApiVersioning__LegacyRoutesEnabled=true`) |
 | Client compatibility enforcement | Disabled during rollout (`ClientCompatibility__EnforcementEnabled=false`) |
-| Client compatibility versions | `ClientCompatibility__MinimumClientVersion` / `__LatestClientVersion`, bumped per client release (see below) |
+| Client compatibility versions | `ClientCompatibility__MinimumClientVersion` (bumped when raising the supported floor, see below); `__LatestClientVersion` is only a fallback, normally left alone |
 | Device binding persistence/enforcement | Persistence on, enforcement off during rollout (`DeviceBinding__Enabled=true`, `DeviceBinding__EnforcementEnabled=false`) |
 
 The conservative memory and concurrency values account for requests that launch
@@ -45,22 +45,29 @@ limits unchanged.
 
 ## Client version bumps per client release
 
-`/api/v1/meta` serves `MinimumClientVersion` and `LatestClientVersion` verbatim, and
-the client decides what to show from them. The update banner fires only in the band
-`minimum <= installed < latest`; below `minimum` the client routes itself to its
-update-required page. Equal values leave an empty band, so no banner can ever appear.
+`/api/v1/meta` serves `MinimumClientVersion` verbatim from config, and the client
+decides what to show from it alongside `LatestClientVersion`. The update banner fires
+only in the band `minimum <= installed < latest`; below `minimum` the client routes
+itself to its update-required page. Equal values leave an empty band, so no banner can
+ever appear.
 
-When a client release is published, update the workflow `env_vars`:
+`LatestClientVersion` is resolved live: `GithubLatestClientVersionProvider` reads the
+`tag_name` off `oangsa/leb2-watch`'s
+[latest GitHub release](https://api.github.com/repos/oangsa/leb2-watch/releases/latest),
+caches it in-process for 15 minutes, and falls back to
+`ClientCompatibility__LatestClientVersion` only when the GitHub lookup fails (network
+error, non-success status, unexpected payload). Publishing a client release is enough
+to move the banner — no deploy or env var change needed for `LatestClientVersion`.
 
-- `ClientCompatibility__LatestClientVersion` — the version whose release artifact is
-  already published. Bumping it before publication points the banner at a release
-  page without the build.
+When raising the supported floor, update the workflow `env_vars`:
+
 - `ClientCompatibility__MinimumClientVersion` — the oldest version still supported.
 
-Startup validation rejects `MinimumClientVersion > LatestClientVersion`, so raise
-`LatestClientVersion` first. Clients older than the release that introduced the
-compatibility check do not read `/api/v1/meta` at all; enforcement must be enabled
-for `MinimumClientVersion` to reach them.
+Startup validation rejects `MinimumClientVersion > LatestClientVersion`, comparing
+against the configured `LatestClientVersion` fallback (the live value isn't known at
+startup), so keep the fallback at or above the floor you're raising. Clients older
+than the release that introduced the compatibility check do not read `/api/v1/meta`
+at all; enforcement must be enabled for `MinimumClientVersion` to reach them.
 
 The authenticated semester scraper waits for usable semester links after the LEB2
 SPA finishes navigation. It polls the semantic link condition for up to the

@@ -13,22 +13,30 @@ namespace LEB2SCRAPPER.Presentation.Controller;
 public sealed class MetaController : ControllerBase
 {
     private readonly ClientCompatibilityOptions _options;
+    private readonly ILatestClientVersionProvider _latestClientVersionProvider;
 
-    public MetaController(ClientCompatibilityOptions options)
+    public MetaController(
+        ClientCompatibilityOptions options,
+        ILatestClientVersionProvider latestClientVersionProvider)
     {
         _options = options;
+        _latestClientVersionProvider = latestClientVersionProvider;
     }
 
     [HttpGet]
     [AllowAnonymous]
     [ProducesResponseType(typeof(ApiMetadataResponse), StatusCodes.Status200OK)]
-    public IActionResult Get()
+    public async Task<IActionResult> Get(CancellationToken cancellationToken)
     {
+        var latestClientVersion =
+            await _latestClientVersionProvider.GetLatestVersionAsync(cancellationToken)
+            ?? _options.LatestClientVersion;
+
         return Ok(new ApiMetadataResponse
         {
             ApiVersion = 1,
             MinimumClientVersion = _options.MinimumClientVersion,
-            LatestClientVersion = _options.LatestClientVersion,
+            LatestClientVersion = latestClientVersion,
             DownloadUrl = _options.DownloadUrl
         });
     }
