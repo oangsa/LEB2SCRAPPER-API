@@ -253,90 +253,44 @@ public class HttpService : IHttpService
     }
 
     public class FlexibleDateTimeConverter : JsonConverter<DateTime?>
-{
-    private readonly string[] _dateFormats = new[]
     {
-        "yyyy-MM-dd HH:mm:ss",
-        "yyyy-MM-ddTHH:mm:ss",
-        "yyyy-MM-ddTHH:mm:ssZ",
-        "yyyy-MM-ddTHH:mm:ss.fffZ",
-        "yyyy-MM-dd",
-        "MM/dd/yyyy",
-        "MM/dd/yyyy HH:mm:ss",
-        "dd/MM/yyyy",
-        "dd/MM/yyyy HH:mm:ss"
-    };
-
-    public override DateTime? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
-    {
-        if (reader.TokenType == JsonTokenType.Null)
+        public override DateTime? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
         {
-            return null;
-        }
-
-        if (reader.TokenType == JsonTokenType.String)
-        {
-            var dateString = reader.GetString();
-
-            if (string.IsNullOrEmpty(dateString))
+            if (reader.TokenType == JsonTokenType.Null)
             {
                 return null;
             }
 
-            foreach (var format in _dateFormats)
+            if (reader.TokenType == JsonTokenType.String)
             {
-                if (DateTime.TryParseExact(dateString, format, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out var result))
-                {
-                    return result;
-                }
+                return Leb2DateTimeParser.Parse(reader.GetString());
             }
 
-            if (DateTime.TryParse(dateString, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out var fallbackResult))
+            try
             {
-                return fallbackResult;
+                return Leb2DateTimeParser.NormalizeToUtc(reader.GetDateTime());
             }
-
-            return null;
+            catch
+            {
+                return null;
+            }
         }
 
-        try
+        public override void Write(Utf8JsonWriter writer, DateTime? value, JsonSerializerOptions options)
         {
-            return reader.GetDateTime();
-        }
-        catch
-        {
-            return null;
+            if (value.HasValue)
+            {
+                writer.WriteStringValue(Leb2DateTimeParser.FormatForTransport(value.Value));
+            }
+            else
+            {
+                writer.WriteNullValue();
+            }
         }
     }
-
-    public override void Write(Utf8JsonWriter writer, DateTime? value, JsonSerializerOptions options)
-    {
-        if (value.HasValue)
-        {
-            writer.WriteStringValue(value.Value.ToString("yyyy-MM-ddTHH:mm:ss.fffZ"));
-        }
-        else
-        {
-            writer.WriteNullValue();
-        }
-    }
-}
 
     public class FlexibleNonNullableDateTimeConverter : JsonConverter<DateTime>
     {
-        private readonly string[] _dateFormats = new[]
-        {
-            "yyyy-MM-dd HH:mm:ss",
-            "yyyy-MM-ddTHH:mm:ss",
-            "yyyy-MM-ddTHH:mm:ssZ",
-            "yyyy-MM-ddTHH:mm:ss.fffZ",
-            "yyyy-MM-dd",
-            "MM/dd/yyyy",
-            "MM/dd/yyyy HH:mm:ss",
-            "dd/MM/yyyy",
-            "dd/MM/yyyy HH:mm:ss"
-        };
-
         public override DateTime Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
         {
             if (reader.TokenType == JsonTokenType.Null)
@@ -346,32 +300,12 @@ public class HttpService : IHttpService
 
             if (reader.TokenType == JsonTokenType.String)
             {
-                var dateString = reader.GetString();
-
-                if (string.IsNullOrEmpty(dateString))
-                {
-                    return DateTime.MinValue;
-                }
-
-                foreach (var format in _dateFormats)
-                {
-                    if (DateTime.TryParseExact(dateString, format, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out var result))
-                    {
-                        return result;
-                    }
-                }
-
-                if (DateTime.TryParse(dateString, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out var fallbackResult))
-                {
-                    return fallbackResult;
-                }
-
-                return DateTime.MinValue;
+                return Leb2DateTimeParser.Parse(reader.GetString()) ?? DateTime.MinValue;
             }
 
             try
             {
-                return reader.GetDateTime();
+                return Leb2DateTimeParser.NormalizeToUtc(reader.GetDateTime());
             }
             catch
             {
@@ -381,7 +315,7 @@ public class HttpService : IHttpService
 
         public override void Write(Utf8JsonWriter writer, DateTime value, JsonSerializerOptions options)
         {
-            writer.WriteStringValue(value.ToString("yyyy-MM-ddTHH:mm:ss.fffZ"));
+            writer.WriteStringValue(Leb2DateTimeParser.FormatForTransport(value));
         }
     }
 

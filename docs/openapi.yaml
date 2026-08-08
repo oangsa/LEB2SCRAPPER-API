@@ -1,0 +1,1355 @@
+openapi: 3.0.3
+info:
+  title: LEB2SCRAPPER API
+  description: >
+    HTTP contract for the LEB2SCRAPPER API. This file is a machine-readable mirror of
+    docs/api-reference.md, which remains the canonical prose reference (migration
+    rollout order, Supabase schema/migration SQL, device-binding and client-compatibility
+    behavior). Every request/response body uses JSON unless stated otherwise.
+
+
+    API versioning is expressed in the URL path, not in this document's `info.version`.
+    `v1` is served by default; `ActivityController` additionally serves `v2`, which
+    returns identical fields to `v1` but serializes `startDate`, `dueDate`, `createdAt`,
+    `lastDueDateNotificationDate`, and `lastStatusChangeNotificationDate` as genuine UTC
+    instants instead of naive GMT+7 wall-clock strings. Deprecated unversioned legacy
+    alias routes (enabled while `ApiVersioning:LegacyRoutesEnabled=true`) execute the
+    same `v1` actions and are omitted from this document, matching their exclusion from
+    the generated Swagger documents.
+  version: "1.0.0"
+  license:
+    name: Apache-2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+servers:
+  - url: http://localhost:5015
+    description: Local development
+  - url: "https://<cloud-run-service-url>"
+    description: Cloud Run (URL is per-deployment)
+tags:
+  - name: User
+    description: Access-key activation, LEB2 session cookie issuance, and device logout.
+  - name: Semester
+    description: LEB2 semesters visible to the authenticated session.
+  - name: Class
+    description: LEB2 classes for one semester.
+  - name: Activity
+    description: LEB2 activities, available as v1 (legacy shape) and v2 (UTC-corrected shape).
+  - name: Meta
+    description: Anonymous client-compatibility bootstrap metadata.
+  - name: Health
+    description: Anonymous, locally observed LEB2 dependency health.
+paths:
+  /api/v1/User/login:
+    post:
+      tags: [User]
+      operationId: loginV1
+      summary: Authenticate against LEB2 and claim a provisioned access key
+      description: >
+        Authenticates directly against the LEB2 login API and maps the successful result
+        to a user profile. A provisioned but unassigned key is allowed here so a
+        successful login can claim it. On success the API normalizes the username into
+        `users.student_id`, persists the authoritative LEB2 `User.Id`, and upserts the
+        user in the same transaction as the key claim. An invalid login creates neither
+        the user nor the assignment.
+      security:
+        - AccessKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/DeviceIdHeader"
+        - $ref: "#/components/parameters/DeviceNameHeader"
+        - $ref: "#/components/parameters/DevicePlatformHeader"
+        - $ref: "#/components/parameters/DeviceOsVersionHeader"
+        - $ref: "#/components/parameters/ClientVersionHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Credentials"
+      responses:
+        "200":
+          description: LEB2 authenticated and the key state was reconciled.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoginResponse"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: >
+            `ACCESS_KEY_ALREADY_ASSIGNED` (another account already owns the key) or
+            `ACCESS_KEY_IDENTITY_MISMATCH` (an assigned key was used with another
+            username).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: The credentials were rejected by LEB2 or no user was found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: >
+            `ACCESS_KEY_IDENTITY_CONFLICT` — the successful LEB2 `User.Id` conflicts
+            with the local identity already established for this key.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/v1/User/cookie:
+    post:
+      tags: [User]
+      operationId: getCookieV1
+      summary: Sign in through Selenium and return the LEB2 session cookie
+      description: >
+        Requires an already-assigned key with a stored `users.leb2_user_id`. Legacy
+        assigned users with a null value must repeat `/api/v1/User/login` first.
+        `remember` is accepted as part of the shared credentials model but is not used
+        by this flow. Treat the returned cookie value as a secret.
+      security:
+        - AccessKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/DeviceIdHeader"
+        - $ref: "#/components/parameters/DeviceNameHeader"
+        - $ref: "#/components/parameters/DevicePlatformHeader"
+        - $ref: "#/components/parameters/DeviceOsVersionHeader"
+        - $ref: "#/components/parameters/ClientVersionHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Credentials"
+      responses:
+        "200":
+          description: "The complete LEB2 session cookie, to be replayed as `Authorization: Bearer <value>`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CookieResponse"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: >
+            `ACCESS_KEY_NOT_ACTIVATED` (login has not claimed the key yet),
+            `ACCESS_KEY_IDENTITY_MISMATCH` (credentials belong to another student), or
+            `ACCESS_KEY_REAUTHENTICATION_REQUIRED` (local identity data is incomplete).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: The login completed without a usable result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/v1/User/logout:
+    post:
+      tags: [User]
+      operationId: logoutV1
+      summary: End the temporary device binding for the access key
+      description: >
+        Unbinds only the matching device relationship; it never deletes `user_keys`
+        account ownership and never contacts LEB2. Repeating logout with no active
+        binding still returns `204 No Content`. A different active device receives
+        `403 DEVICE_BINDING_MISMATCH` and the active binding is left unchanged.
+      security:
+        - AccessKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/DeviceIdHeader"
+        - $ref: "#/components/parameters/DeviceNameHeader"
+        - $ref: "#/components/parameters/DevicePlatformHeader"
+        - $ref: "#/components/parameters/DeviceOsVersionHeader"
+        - $ref: "#/components/parameters/ClientVersionHeader"
+      responses:
+        "204":
+          description: The device binding (if any) was ended.
+        "400":
+          description: >
+            `DEVICE_ID_REQUIRED` (device-binding enforcement requires `X-Device-ID`) or
+            `DEVICE_ID_INVALID` (a device header was invalid or repeated).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: >
+            `ACCESS_KEY_NOT_ACTIVATED`, `DEVICE_BINDING_REQUIRED`, or
+            `DEVICE_BINDING_MISMATCH`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/v1/meta:
+    get:
+      tags: [Meta]
+      operationId: getMetaV1
+      summary: Anonymous client-compatibility bootstrap metadata
+      description: >
+        Cheap and anonymous. Does not access Supabase, LEB2, Selenium, access-key
+        state, device binding, or client-version enforcement. `apiVersion` describes
+        the URL contract (always `1` for this route); it is not the frontend build
+        version.
+      security: []
+      responses:
+        "200":
+          description: Compatibility metadata.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiMetadataResponse"
+
+  /api/v1/health/leb2:
+    get:
+      tags: [Health]
+      operationId: getHealthV1
+      summary: Locally observed LEB2 dependency health
+      description: >
+        Returns locally observed request-gate/backoff state for each fixed LEB2
+        dependency. Does not contact LEB2 and is not a live upstream reachability
+        probe. Always returns `200 OK`, including when `status` is `degraded`, and
+        always sends `Cache-Control: no-store`. `source` is always
+        `local-observed-state`; the state is local to one application process or
+        Cloud Run instance.
+      security: []
+      responses:
+        "200":
+          description: Observed endpoint health snapshot.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                example: no-store
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Leb2HealthResponse"
+
+  /api/v1/Semester:
+    get:
+      tags: [Semester]
+      operationId: getSemestersV1
+      summary: List semesters visible to the authenticated LEB2 session
+      description: >
+        `id` is the internal LEB2 semester ID used with `/api/v1/Class/{id}` and the
+        activity routes. `name` is the rendered visible semester label for display.
+      security:
+        - AccessKeyAuth: []
+          Leb2BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/DeviceIdHeader"
+        - $ref: "#/components/parameters/DeviceNameHeader"
+        - $ref: "#/components/parameters/DevicePlatformHeader"
+        - $ref: "#/components/parameters/DeviceOsVersionHeader"
+        - $ref: "#/components/parameters/ClientVersionHeader"
+      responses:
+        "200":
+          description: Semesters visible to this session (possibly empty).
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/SemesterInfo"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          description: >
+            `AUTHENTICATION_REQUIRED` (session header absent/empty),
+            `ACCESS_KEY_REQUIRED`, `ACCESS_KEY_INVALID`, or `SESSION_EXPIRED` (LEB2
+            rejected the session — includes `WWW-Authenticate: Bearer`).
+          headers:
+            WWW-Authenticate:
+              required: false
+              schema:
+                type: string
+                example: Bearer
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: "`ACCESS_KEY_NOT_ACTIVATED` — the key has not been claimed through `/api/v1/User/login`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "502":
+          description: "`SCRAPE_RESPONSE_CHANGED` — the rendered page no longer matches the scraper."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/v1/Class/{id}:
+    get:
+      tags: [Class]
+      operationId: getClassesV1
+      summary: List classes for one semester
+      description: >
+        The route requires an integer; a non-integer does not match the route and
+        produces the framework's ordinary `404`. Unlike the activity routes, this
+        route does not currently apply range validation — a non-positive integer
+        reaches the repository and can surface as `502 LEB2_UNAVAILABLE`.
+      security:
+        - AccessKeyAuth: []
+          Leb2BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: LEB2 semester ID; clients should send a positive value.
+          schema:
+            type: integer
+          example: 101
+        - $ref: "#/components/parameters/DeviceIdHeader"
+        - $ref: "#/components/parameters/DeviceNameHeader"
+        - $ref: "#/components/parameters/DevicePlatformHeader"
+        - $ref: "#/components/parameters/DeviceOsVersionHeader"
+        - $ref: "#/components/parameters/ClientVersionHeader"
+      responses:
+        "200":
+          description: Classes for the semester (empty array if none were found).
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ClassInfo"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          description: >
+            `AUTHENTICATION_REQUIRED`, `ACCESS_KEY_REQUIRED`, `ACCESS_KEY_INVALID`, or
+            `SESSION_EXPIRED`.
+          headers:
+            WWW-Authenticate:
+              required: false
+              schema:
+                type: string
+                example: Bearer
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: "`ACCESS_KEY_NOT_ACTIVATED`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "502":
+          description: "`LEB2_UNAVAILABLE` (invalid/unusable LEB2 class request) or `SCRAPE_RESPONSE_CHANGED`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/v1/Activity/{semesterId}/{classId}:
+    get:
+      tags: [Activity]
+      operationId: getActivitiesByClassV1
+      summary: List activities for one class (v1, legacy naive GMT+7 date shape)
+      description: >
+        Legacy shape — see `GET /api/v2/Activity/{semesterId}/{classId}` for the
+        timezone-corrected version. Discovers classes for `semesterId` through the
+        60-second structural cache and verifies `classId` belongs to that semester
+        before retrieving activities; if the relationship is missing, the response is
+        `404 RESOURCE_NOT_FOUND` and the activity lookup is not performed.
+      security:
+        - AccessKeyAuth: []
+          Leb2BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/SemesterIdPath"
+        - $ref: "#/components/parameters/ClassIdPath"
+        - $ref: "#/components/parameters/UserIdHeader"
+        - $ref: "#/components/parameters/DeviceIdHeader"
+        - $ref: "#/components/parameters/DeviceNameHeader"
+        - $ref: "#/components/parameters/DevicePlatformHeader"
+        - $ref: "#/components/parameters/DeviceOsVersionHeader"
+        - $ref: "#/components/parameters/ClientVersionHeader"
+      responses:
+        "200":
+          description: Activities for the class (empty array if none were found).
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ActivityV1"
+        "400":
+          description: >
+            A route integer was less than one, or `X-LEB2-USER-ID` was missing,
+            non-integer, or less than one.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationErrorResponse"
+        "401":
+          $ref: "#/components/responses/ActivityUnauthorized"
+        "403":
+          $ref: "#/components/responses/ActivityForbidden"
+        "404":
+          description: "`RESOURCE_NOT_FOUND` — the class does not belong to the supplied semester."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/v2/Activity/{semesterId}/{classId}:
+    get:
+      tags: [Activity]
+      operationId: getActivitiesByClassV2
+      summary: List activities for one class (v2, UTC date shape)
+      description: >
+        Identical to `GET /api/v1/Activity/{semesterId}/{classId}` in route
+        parameters, headers, discovery behavior, and error responses. The only
+        difference is that `startDate`, `dueDate`, `createdAt`,
+        `lastDueDateNotificationDate`, and `lastStatusChangeNotificationDate`
+        serialize as genuine UTC instants instead of naive GMT+7 wall-clock strings.
+      security:
+        - AccessKeyAuth: []
+          Leb2BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/SemesterIdPath"
+        - $ref: "#/components/parameters/ClassIdPath"
+        - $ref: "#/components/parameters/UserIdHeader"
+        - $ref: "#/components/parameters/DeviceIdHeader"
+        - $ref: "#/components/parameters/DeviceNameHeader"
+        - $ref: "#/components/parameters/DevicePlatformHeader"
+        - $ref: "#/components/parameters/DeviceOsVersionHeader"
+        - $ref: "#/components/parameters/ClientVersionHeader"
+      responses:
+        "200":
+          description: Activities for the class (empty array if none were found).
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ActivityV2"
+        "400":
+          description: >
+            A route integer was less than one, or `X-LEB2-USER-ID` was missing,
+            non-integer, or less than one.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationErrorResponse"
+        "401":
+          $ref: "#/components/responses/ActivityUnauthorized"
+        "403":
+          $ref: "#/components/responses/ActivityForbidden"
+        "404":
+          description: "`RESOURCE_NOT_FOUND` — the class does not belong to the supplied semester."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/v1/Activity/{semesterId}:
+    get:
+      tags: [Activity]
+      operationId: getActivitiesBySemesterV1
+      summary: List activities for every class in a semester (v1, legacy naive GMT+7 date shape)
+      description: >
+        Legacy shape — see `GET /api/v2/Activity/{semesterId}` for the
+        timezone-corrected version. Discovers every class in the semester, retrieves
+        their activities with maximum parallelism two, and returns one flat array.
+        Classes are processed in class ID order; LEB2's activity order is preserved
+        within each class. Fail-fast: an error is returned instead of a partial list
+        if class discovery or any class activity request fails.
+      security:
+        - AccessKeyAuth: []
+          Leb2BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/SemesterIdPath"
+        - $ref: "#/components/parameters/UserIdHeader"
+        - $ref: "#/components/parameters/DeviceIdHeader"
+        - $ref: "#/components/parameters/DeviceNameHeader"
+        - $ref: "#/components/parameters/DevicePlatformHeader"
+        - $ref: "#/components/parameters/DeviceOsVersionHeader"
+        - $ref: "#/components/parameters/ClientVersionHeader"
+      responses:
+        "200":
+          description: >
+            Activities for the semester (empty array if the semester has no
+            published classes or activities).
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ActivityV1"
+        "400":
+          description: "`semesterId` was less than one, or `X-LEB2-USER-ID` was missing, non-integer, or less than one."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationErrorResponse"
+        "401":
+          $ref: "#/components/responses/ActivityUnauthorized"
+        "403":
+          $ref: "#/components/responses/ActivityForbidden"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/v2/Activity/{semesterId}:
+    get:
+      tags: [Activity]
+      operationId: getActivitiesBySemesterV2
+      summary: List activities for every class in a semester (v2, UTC date shape)
+      description: >
+        Identical to `GET /api/v1/Activity/{semesterId}` in route parameters, headers,
+        discovery behavior, and error responses. The only difference is that
+        `startDate`, `dueDate`, `createdAt`, `lastDueDateNotificationDate`, and
+        `lastStatusChangeNotificationDate` serialize as genuine UTC instants instead
+        of naive GMT+7 wall-clock strings.
+      security:
+        - AccessKeyAuth: []
+          Leb2BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/SemesterIdPath"
+        - $ref: "#/components/parameters/UserIdHeader"
+        - $ref: "#/components/parameters/DeviceIdHeader"
+        - $ref: "#/components/parameters/DeviceNameHeader"
+        - $ref: "#/components/parameters/DevicePlatformHeader"
+        - $ref: "#/components/parameters/DeviceOsVersionHeader"
+        - $ref: "#/components/parameters/ClientVersionHeader"
+      responses:
+        "200":
+          description: >
+            Activities for the semester (empty array if the semester has no
+            published classes or activities).
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ActivityV2"
+        "400":
+          description: "`semesterId` was less than one, or `X-LEB2-USER-ID` was missing, non-integer, or less than one."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationErrorResponse"
+        "401":
+          $ref: "#/components/responses/ActivityUnauthorized"
+        "403":
+          $ref: "#/components/responses/ActivityForbidden"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/v1/Activity/{semesterId}/snapshot:
+    get:
+      tags: [Activity]
+      operationId: getSemesterSnapshotV1
+      summary: Nested classes-and-activities snapshot for a semester (v1, legacy naive GMT+7 date shape)
+      description: >
+        Legacy shape — see `GET /api/v2/Activity/{semesterId}/snapshot` for the
+        timezone-corrected version. Classes with no activities remain in the
+        response. Fail-fast: never returns a successful partial snapshot.
+      security:
+        - AccessKeyAuth: []
+          Leb2BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/SemesterIdPath"
+        - $ref: "#/components/parameters/UserIdHeader"
+        - $ref: "#/components/parameters/DeviceIdHeader"
+        - $ref: "#/components/parameters/DeviceNameHeader"
+        - $ref: "#/components/parameters/DevicePlatformHeader"
+        - $ref: "#/components/parameters/DeviceOsVersionHeader"
+        - $ref: "#/components/parameters/ClientVersionHeader"
+      responses:
+        "200":
+          description: "Nested snapshot (empty `classes` array if the semester has no published classes)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SemesterSnapshotResponseV1"
+        "400":
+          description: "`semesterId` was less than one, or `X-LEB2-USER-ID` was missing, non-integer, or less than one."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationErrorResponse"
+        "401":
+          $ref: "#/components/responses/ActivityUnauthorized"
+        "403":
+          $ref: "#/components/responses/ActivityForbidden"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/v2/Activity/{semesterId}/snapshot:
+    get:
+      tags: [Activity]
+      operationId: getSemesterSnapshotV2
+      summary: Nested classes-and-activities snapshot for a semester (v2, UTC date shape)
+      description: >
+        Identical to `GET /api/v1/Activity/{semesterId}/snapshot` in route
+        parameters, headers, nesting behavior, and error responses. The only
+        difference is that each nested activity's `startDate`, `dueDate`,
+        `createdAt`, `lastDueDateNotificationDate`, and
+        `lastStatusChangeNotificationDate` serialize as genuine UTC instants instead
+        of naive GMT+7 wall-clock strings.
+      security:
+        - AccessKeyAuth: []
+          Leb2BearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/SemesterIdPath"
+        - $ref: "#/components/parameters/UserIdHeader"
+        - $ref: "#/components/parameters/DeviceIdHeader"
+        - $ref: "#/components/parameters/DeviceNameHeader"
+        - $ref: "#/components/parameters/DevicePlatformHeader"
+        - $ref: "#/components/parameters/DeviceOsVersionHeader"
+        - $ref: "#/components/parameters/ClientVersionHeader"
+      responses:
+        "200":
+          description: "Nested snapshot (empty `classes` array if the semester has no published classes)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SemesterSnapshotResponseV2"
+        "400":
+          description: "`semesterId` was less than one, or `X-LEB2-USER-ID` was missing, non-integer, or less than one."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationErrorResponse"
+        "401":
+          $ref: "#/components/responses/ActivityUnauthorized"
+        "403":
+          $ref: "#/components/responses/ActivityForbidden"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+components:
+  securitySchemes:
+    AccessKeyAuth:
+      type: apiKey
+      in: header
+      name: access-key
+      description: >
+        Provisioned UUID from Supabase `keys.id`. A secret per-user API credential,
+        not a JWT. Case-insensitive header name; exactly one UUID value. Never
+        accepted in a URL, query string, or request body. `POST /api/v1/User/login`
+        accepts a provisioned-but-unassigned key; every other protected route
+        requires an assigned (activated) key.
+    Leb2BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: Opaque LEB2 session cookie
+      description: >
+        `Authorization: Bearer <leb2-session-cookie>`. The value is the opaque
+        cookie string returned by `POST /api/v1/User/cookie`, not a JWT — it is
+        never locally parsed or verified; actual validity is determined by LEB2's
+        responses. Legacy clients may send the cookie without the `Bearer` prefix.
+  parameters:
+    SemesterIdPath:
+      name: semesterId
+      in: path
+      required: true
+      description: LEB2 semester ID.
+      schema:
+        type: integer
+        minimum: 1
+      example: 101
+    ClassIdPath:
+      name: classId
+      in: path
+      required: true
+      description: LEB2 class ID used for the activity lookup.
+      schema:
+        type: integer
+        minimum: 1
+      example: 3001
+    UserIdHeader:
+      name: X-LEB2-USER-ID
+      in: header
+      required: true
+      description: >
+        Client-supplied assertion of the numeric LEB2 identity, kept for
+        compatibility. Must match the LEB2 identity stored for the access-key
+        owner; the opaque `Authorization` session value is never parsed to derive
+        identity.
+      schema:
+        type: integer
+        minimum: 1
+      example: 2001
+    DeviceIdHeader:
+      name: X-Device-ID
+      in: header
+      required: false
+      description: >
+        Stable app-generated device identifier. HMAC-SHA256'd server-side with
+        `DeviceBinding:HmacSecret` before storage; the raw value never enters
+        PostgreSQL logs or response bodies. Optional while
+        `DeviceBinding:EnforcementEnabled=false`, required once enforcement is
+        enabled.
+      schema:
+        type: string
+    DeviceNameHeader:
+      name: X-Device-Name
+      in: header
+      required: false
+      description: Display name for the device.
+      schema:
+        type: string
+      example: Example phone
+    DevicePlatformHeader:
+      name: X-Device-Platform
+      in: header
+      required: false
+      schema:
+        type: string
+      example: android
+    DeviceOsVersionHeader:
+      name: X-Device-OS-Version
+      in: header
+      required: false
+      schema:
+        type: string
+      example: "14"
+    ClientVersionHeader:
+      name: X-Client-Version
+      in: header
+      required: false
+      description: >
+        Authoritative frontend application version (semantic version). Populates
+        the device binding's `app_version` when device binding is persisted.
+        Optional while `ClientCompatibility:EnforcementEnabled=false`; once
+        enabled, missing/blank values receive `400 CLIENT_VERSION_REQUIRED` and
+        malformed or repeated values receive `400 CLIENT_VERSION_INVALID`. A
+        semantically older supported client receives
+        `426 CLIENT_UPDATE_REQUIRED`.
+      schema:
+        type: string
+      example: 0.5.2
+  responses:
+    ValidationError:
+      description: "`INVALID_REQUEST` — request-model, route-value, or header validation failed."
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ValidationErrorResponse"
+    Unauthorized:
+      description: "`ACCESS_KEY_REQUIRED` (header absent) or `ACCESS_KEY_INVALID` (malformed or not provisioned)."
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    ActivityUnauthorized:
+      description: >
+        `AUTHENTICATION_REQUIRED` (session header absent/empty), `ACCESS_KEY_REQUIRED`,
+        `ACCESS_KEY_INVALID`, or `SESSION_EXPIRED` (LEB2 rejected the session —
+        includes `WWW-Authenticate: Bearer`).
+      headers:
+        WWW-Authenticate:
+          required: false
+          schema:
+            type: string
+            example: Bearer
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    ActivityForbidden:
+      description: >
+        `ACCESS_KEY_NOT_ACTIVATED` (key not claimed through `/api/v1/User/login`),
+        `ACCESS_KEY_IDENTITY_MISMATCH` (`X-LEB2-USER-ID` does not match the bound
+        LEB2 identity), or `ACCESS_KEY_REAUTHENTICATION_REQUIRED` (stored LEB2
+        identity not initialized).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    TooManyRequests:
+      description: "`CLIENT_THROTTLE_ACTIVE` — this client has too many active or queued LEB2 requests."
+      headers:
+        Retry-After:
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+          description: Seconds until the client's request queue is expected to clear.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    InternalError:
+      description: "`UNEXPECTED_ERROR` — an unexpected server error occurred."
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    BadGateway:
+      description: "`LEB2_UNAVAILABLE` (LEB2 rejected or could not complete the request) or `SCRAPE_RESPONSE_CHANGED` (unexpected HTML/JSON structure)."
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    ServiceUnavailable:
+      description: >
+        `LEB2_UNAVAILABLE` (transient LEB2 or local browser-automation failure),
+        `REQUEST_BACKOFF_ACTIVE` (this operation's backoff scope is paused after a
+        recent upstream failure), or `ACCESS_KEY_STORE_UNAVAILABLE` (Supabase
+        access-key validation is temporarily unavailable). `Retry-After` is present
+        only for `REQUEST_BACKOFF_ACTIVE`.
+      headers:
+        Retry-After:
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+          description: Seconds until this backoff scope is expected to clear. Present only for `REQUEST_BACKOFF_ACTIVE`.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+  schemas:
+    ApiErrorCode:
+      type: string
+      description: Machine-readable error code. Mirrors `ApiErrorCodes` in the application source.
+      enum:
+        - ACCESS_KEY_ALREADY_ASSIGNED
+        - ACCESS_KEY_IDENTITY_CONFLICT
+        - ACCESS_KEY_IDENTITY_MISMATCH
+        - ACCESS_KEY_INVALID
+        - ACCESS_KEY_NOT_ACTIVATED
+        - ACCESS_KEY_REAUTHENTICATION_REQUIRED
+        - ACCESS_KEY_REQUIRED
+        - ACCESS_KEY_STORE_UNAVAILABLE
+        - AUTHENTICATION_REQUIRED
+        - CLIENT_UPDATE_REQUIRED
+        - CLIENT_VERSION_INVALID
+        - CLIENT_VERSION_REQUIRED
+        - CLIENT_THROTTLE_ACTIVE
+        - DEVICE_BINDING_MISMATCH
+        - DEVICE_BINDING_REQUIRED
+        - DEVICE_ID_INVALID
+        - DEVICE_ID_REQUIRED
+        - INVALID_REQUEST
+        - LEB2_UNAVAILABLE
+        - REQUEST_BACKOFF_ACTIVE
+        - RESOURCE_NOT_FOUND
+        - SCRAPE_RESPONSE_CHANGED
+        - SESSION_EXPIRED
+        - UNEXPECTED_ERROR
+    ErrorResponse:
+      type: object
+      description: Standard shape for operational, authentication, and upstream errors.
+      required: [message, responseCode, details, timestamp, traceId]
+      properties:
+        message:
+          type: string
+          example: LEB2 is temporarily unavailable.
+        responseCode:
+          $ref: "#/components/schemas/ApiErrorCode"
+        details:
+          type: string
+          nullable: true
+        timestamp:
+          type: string
+          format: date-time
+          example: "2026-07-24T12:00:00Z"
+        traceId:
+          type: string
+          nullable: true
+          example: example-trace-id
+    ValidationErrorResponse:
+      type: object
+      description: Shape for request-model, route-value, and header validation errors.
+      required: [statusCode, message, responseCode, timestamp, traceId, validationErrors]
+      properties:
+        statusCode:
+          type: integer
+          example: 400
+        message:
+          type: string
+          example: Validation failed.
+        responseCode:
+          $ref: "#/components/schemas/ApiErrorCode"
+        timestamp:
+          type: string
+          format: date-time
+          example: "2026-07-24T12:00:00Z"
+        traceId:
+          type: string
+          nullable: true
+          example: example-trace-id
+        validationErrors:
+          type: object
+          nullable: true
+          description: Keys and messages depend on which input failed.
+          additionalProperties:
+            type: array
+            items:
+              type: string
+          example:
+            semesterId:
+              - The field semesterId must be between 1 and 2147483647.
+    Credentials:
+      type: object
+      required: [username, password]
+      properties:
+        username:
+          type: string
+          example: fake.student
+        password:
+          type: string
+          format: password
+          example: fake-password
+        remember:
+          type: boolean
+          default: false
+          description: Accepted by the shared model; not used by the `/api/v1/User/cookie` Selenium flow.
+    LoginResponse:
+      type: object
+      description: The existing LEB2 user profile shape. Does not include the access key or local database identifiers.
+      required: [id, kmuttId, nameThai, nameEnglish, surnameThai, surnameEnglish]
+      properties:
+        id:
+          type: integer
+          example: 2001
+        kmuttId:
+          type: string
+          example: "60000000"
+        nameThai:
+          type: string
+          example: ชื่อ
+        nameEnglish:
+          type: string
+          example: Example
+        surnameThai:
+          type: string
+          example: นามสกุล
+        surnameEnglish:
+          type: string
+          example: Student
+    CookieResponse:
+      type: object
+      required: [cookie]
+      properties:
+        cookie:
+          type: string
+          description: Complete LEB2 session cookie string. Treat as a secret.
+          example: "session_cookie_name=fake-session-value; another_cookie=fake-value"
+    ApiMetadataResponse:
+      type: object
+      required: [apiVersion, minimumClientVersion, latestClientVersion, downloadUrl]
+      properties:
+        apiVersion:
+          type: integer
+          example: 1
+        minimumClientVersion:
+          type: string
+          example: 0.5.0
+        latestClientVersion:
+          type: string
+          example: 0.5.0
+        downloadUrl:
+          type: string
+          format: uri
+          example: https://github.com/oangsa/leb2-watch/releases/latest
+    Leb2HealthResponse:
+      type: object
+      required: [observedAt, source, status, endpoints]
+      properties:
+        observedAt:
+          type: string
+          format: date-time
+          example: "2026-07-24T12:00:00Z"
+        source:
+          type: string
+          enum: [local-observed-state]
+        status:
+          type: string
+          enum: [healthy, degraded]
+          description: "`degraded` when any endpoint has active locally observed backoff."
+        endpoints:
+          type: array
+          items:
+            $ref: "#/components/schemas/Leb2EndpointHealthResponse"
+    Leb2EndpointHealthResponse:
+      type: object
+      required: [name, status, retryAt, retryAfterSeconds]
+      properties:
+        name:
+          type: string
+          example: activities
+        status:
+          type: string
+          enum: [available, unavailable]
+        retryAt:
+          type: string
+          format: date-time
+          nullable: true
+          example: "2026-07-24T12:00:30Z"
+        retryAfterSeconds:
+          type: integer
+          example: 30
+      description: >
+        For session-scoped endpoints, reflects whether any session's backoff for
+        that endpoint is active; it cannot identify which session is affected.
+    SemesterInfo:
+      type: object
+      required: [id, name]
+      properties:
+        id:
+          type: integer
+          description: Internal LEB2 semester ID.
+          example: 46
+        name:
+          type: string
+          description: Rendered visible semester label.
+          example: 1/2026
+    ClassInfo:
+      type: object
+      required: [id, name]
+      properties:
+        id:
+          type: integer
+          example: 3001
+        name:
+          type: string
+          example: Example Course
+    ActivitySubmissionTimestamp:
+      type: object
+      required: [date, timezoneType, timezone]
+      properties:
+        date:
+          type: string
+          example: "2026-07-20 14:30:00"
+        timezoneType:
+          type: integer
+          example: 3
+        timezone:
+          type: string
+          example: Asia/Bangkok
+    ActivityCommon:
+      type: object
+      description: Fields shared verbatim by `ActivityV1` and `ActivityV2`.
+      required:
+        - id
+        - userId
+        - classId
+        - advStarred
+        - groupType
+        - type
+        - peerAssessment
+        - isAllowRepeat
+        - title
+        - description
+        - editGroupMode
+        - user
+        - activitySubmissionId
+        - classUserId
+        - activityGroupId
+        - activityGroupName
+        - activitySubmissionSubmittedAt
+        - dueDateExceed
+        - quizSubmissionIsSubmitted
+        - countGroupMember
+        - activitySubmissionIsLate
+        - fileActivities
+        - questions
+        - submissions
+        - previousSubmissionStatus
+      properties:
+        id:
+          type: integer
+          example: 1001
+        userId:
+          type: integer
+          example: 2001
+        classId:
+          type: integer
+          example: 3001
+        advStarred:
+          type: integer
+          example: 0
+        groupType:
+          type: string
+          example: individual
+        type:
+          type: string
+          example: ASM
+        peerAssessment:
+          type: integer
+          example: 0
+        isAllowRepeat:
+          type: integer
+          example: 0
+        title:
+          type: string
+          example: Example assignment
+        description:
+          type: string
+          description: Raw upstream HTML.
+          example: "<p>Example description</p>"
+        editGroupMode:
+          type: string
+          example: ""
+        user:
+          type: integer
+          example: 2001
+        activitySubmissionId:
+          type: integer
+          nullable: true
+          example: null
+        classUserId:
+          type: integer
+          example: 4001
+        activityGroupId:
+          type: integer
+          nullable: true
+          example: null
+        activityGroupName:
+          type: string
+          nullable: true
+          example: null
+        activitySubmissionSubmittedAt:
+          type: object
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/ActivitySubmissionTimestamp"
+        dueDateExceed:
+          type: boolean
+          example: false
+        quizSubmissionIsSubmitted:
+          type: boolean
+          example: false
+        countGroupMember:
+          type: integer
+          example: 1
+        activitySubmissionIsLate:
+          type: boolean
+          example: false
+        fileActivities:
+          type: array
+          description: Upstream-defined JSON objects; internal fields are not fixed by this API.
+          items:
+            type: object
+            additionalProperties: true
+        questions:
+          type: array
+          description: Question IDs.
+          items:
+            type: integer
+        submissions:
+          type: array
+          description: Upstream-defined JSON objects; internal fields are not fixed by this API.
+          items:
+            type: object
+            additionalProperties: true
+        previousSubmissionStatus:
+          type: boolean
+          nullable: true
+          example: null
+    ActivityV1:
+      description: >
+        Legacy shape (and all unversioned legacy-alias routes). `startDate`,
+        `dueDate`, `createdAt`, `lastDueDateNotificationDate`, and
+        `lastStatusChangeNotificationDate` are naive GMT+7 wall-clock strings with
+        no offset — see "Why `/api/v2/Activity/...` exists" in
+        docs/api-reference.md.
+      allOf:
+        - $ref: "#/components/schemas/ActivityCommon"
+        - type: object
+          required: [startDate, dueDate, createdAt, lastDueDateNotificationDate, lastStatusChangeNotificationDate]
+          properties:
+            startDate:
+              type: string
+              nullable: true
+              pattern: '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$'
+              description: Naive GMT+7 wall-clock, no offset.
+              example: "2026-07-01T09:00:00"
+            dueDate:
+              type: string
+              nullable: true
+              pattern: '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$'
+              description: Naive GMT+7 wall-clock, no offset.
+              example: "2026-07-31T23:59:00"
+            createdAt:
+              type: string
+              pattern: '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$'
+              description: Naive GMT+7 wall-clock, no offset.
+              example: "2026-06-30T12:00:00"
+            lastDueDateNotificationDate:
+              type: string
+              nullable: true
+              pattern: '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$'
+              description: Naive GMT+7 wall-clock, no offset.
+              example: null
+            lastStatusChangeNotificationDate:
+              type: string
+              nullable: true
+              pattern: '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$'
+              description: Naive GMT+7 wall-clock, no offset.
+              example: null
+    ActivityV2:
+      description: >
+        UTC-corrected shape. `startDate`, `dueDate`, `createdAt`,
+        `lastDueDateNotificationDate`, and `lastStatusChangeNotificationDate` are
+        genuine UTC instants. Same underlying activity as `ActivityV1`, reshaped —
+        see "Why `/api/v2/Activity/...` exists" in docs/api-reference.md.
+      allOf:
+        - $ref: "#/components/schemas/ActivityCommon"
+        - type: object
+          required: [startDate, dueDate, createdAt, lastDueDateNotificationDate, lastStatusChangeNotificationDate]
+          properties:
+            startDate:
+              type: string
+              format: date-time
+              nullable: true
+              example: "2026-07-01T02:00:00.000Z"
+            dueDate:
+              type: string
+              format: date-time
+              nullable: true
+              example: "2026-07-31T16:59:00.000Z"
+            createdAt:
+              type: string
+              format: date-time
+              example: "2026-06-30T05:00:00.000Z"
+            lastDueDateNotificationDate:
+              type: string
+              format: date-time
+              nullable: true
+              example: null
+            lastStatusChangeNotificationDate:
+              type: string
+              format: date-time
+              nullable: true
+              example: null
+    SemesterSnapshotResponseV1:
+      type: object
+      required: [semesterId, classes]
+      properties:
+        semesterId:
+          type: integer
+          example: 101
+        classes:
+          type: array
+          items:
+            $ref: "#/components/schemas/SemesterSnapshotClassV1"
+    SemesterSnapshotResponseV2:
+      type: object
+      required: [semesterId, classes]
+      properties:
+        semesterId:
+          type: integer
+          example: 101
+        classes:
+          type: array
+          items:
+            $ref: "#/components/schemas/SemesterSnapshotClassV2"
+    SemesterSnapshotClassV1:
+      type: object
+      required: [id, name, activities]
+      properties:
+        id:
+          type: integer
+          example: 3001
+        name:
+          type: string
+          example: Example Course
+        activities:
+          type: array
+          items:
+            $ref: "#/components/schemas/ActivityV1"
+    SemesterSnapshotClassV2:
+      type: object
+      required: [id, name, activities]
+      properties:
+        id:
+          type: integer
+          example: 3001
+        name:
+          type: string
+          example: Example Course
+        activities:
+          type: array
+          items:
+            $ref: "#/components/schemas/ActivityV2"

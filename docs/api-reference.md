@@ -25,28 +25,57 @@ All request and response bodies use JSON unless stated otherwise.
 
 ## API versioning and migration
 
-Current API version: `v1`.
+Current API version: `v1`. Canonical prefix: `/api/v1`.
 
-Canonical prefix: `/api/v1`.
-
-ASP.NET Core URL-segment API versioning serves every current application controller
-as API v1. The generated Swagger document is named `v1`; it advertises only the
-canonical versioned paths.
+ASP.NET Core URL-segment API versioning serves every controller as API `v1` by
+default. `ActivityController` additionally serves API `v2`, at `/api/v2`. Each
+version has its own generated Swagger document (`v1`, `v2`); every other
+controller remains `v1`-only, so requesting `/api/v2/<OtherController>` returns an
+ordinary `404 Not Found`.
 
 During migration, `ApiVersioning:LegacyRoutesEnabled` (environment form
 `ApiVersioning__LegacyRoutesEnabled`) defaults to `true`. While enabled, the old
-unversioned paths remain temporary deprecated compatibility aliases. They execute
-the same controller actions and authorization chain as their `/api/v1` counterparts;
-they are not a second API version and do not redirect requests. Set the flag to
-`false` after compatible clients are deployed to make the old paths return ordinary
-`404 Not Found` responses. Legacy aliases are hidden from the primary Swagger
-contract.
+unversioned paths remain temporary deprecated compatibility aliases. They resolve to
+API version `1.0` (the configured default) and execute the same `v1` controller
+actions and authorization chain as their `/api/v1` counterparts; they are not a
+second API version and do not redirect requests. Set the flag to `false` after
+compatible clients are deployed to make the old paths return ordinary `404 Not
+Found` responses. Legacy aliases are hidden from both Swagger contracts.
 
-No v2 contract exists. A future breaking HTTP-contract change must use `/api/v2`
-rather than silently changing v1. Breaking changes include incompatible response
-shapes, removed required fields, changed authentication semantics, changed route
-meaning, or incompatible required request data. Non-breaking additions may remain
-within v1 where appropriate.
+### Why `/api/v2/Activity/...` exists
+
+LEB2 activity timestamps (`due_date`, `start_date`, `created_at`) are documented
+upstream as GMT+7 with no explicit offset. The original implementation stored and
+compared these as naive `DateTime` values using the host's local clock, so
+pending/overdue status depended on the server's system timezone, and the public
+`dueDate`/`startDate`/`createdAt` strings carried the original GMT+7 wall-clock
+numbers with no offset marker. Correcting that is an incompatible response-shape
+change under the breaking-changes rule below, so it shipped as `/api/v2` instead of
+silently changing `v1`:
+
+- `/api/v1/Activity/...` (and its unversioned legacy aliases) keep returning the
+  original, pre-fix shape: `startDate`, `dueDate`, `createdAt`,
+  `lastDueDateNotificationDate`, and `lastStatusChangeNotificationDate` serialize as
+  naive `yyyy-MM-ddTHH:mm:ss` strings with no offset, holding the original GMT+7
+  wall-clock numbers. Already-deployed clients that assume GMT+7 keep working
+  unchanged.
+- `/api/v2/Activity/...` returns the same activities with those same fields as
+  genuine UTC instants (`yyyy-MM-ddTHH:mm:ss.fffZ`). New clients should use `v2` and
+  convert to the user's local timezone for display.
+
+Internally, `Activity.DueDate`/`StartDate`/`CreatedAt` are always normalized to UTC
+by `Leb2DateTimeParser` (`LEB2SCRAPPER.Infrastructure/HttpService`), regardless of
+which API version served the request; only the `v1` controller actions re-shape the
+outbound response back to the legacy format, via
+`LEB2SCRAPPER.Presentation.Legacy.ActivityLegacyExtensions`. Pending/overdue status
+logic (`ActivityExtension.GetStatusText`) always compares real UTC instants and is
+unaffected by API version or host timezone.
+
+A future breaking HTTP-contract change must use a new version rather than silently
+changing an existing one. Breaking changes include incompatible response shapes,
+removed required fields, changed authentication semantics, changed route meaning, or
+incompatible required request data. Non-breaking additions may remain within the
+existing version where appropriate.
 
 ## Endpoint summary
 
@@ -58,8 +87,11 @@ within v1 where appropriate.
 | `GET` | `/api/v1/Semester` | Activated | Yes | None |
 | `GET` | `/api/v1/Class/{id}` | Activated | Yes | None |
 | `GET` | `/api/v1/Activity/{semesterId}/{classId}` | Activated | Yes | None |
+| `GET` | `/api/v2/Activity/{semesterId}/{classId}` | Activated | Yes | None |
 | `GET` | `/api/v1/Activity/{semesterId}` | Activated | Yes | None |
+| `GET` | `/api/v2/Activity/{semesterId}` | Activated | Yes | None |
 | `GET` | `/api/v1/Activity/{semesterId}/snapshot` | Activated | Yes | None |
+| `GET` | `/api/v2/Activity/{semesterId}/snapshot` | Activated | Yes | None |
 | `GET` | `/api/v1/meta` | Anonymous | No | None |
 | `GET` | `/api/v1/health/leb2` | Anonymous | No | None |
 
@@ -385,7 +417,14 @@ off and mandatory after enforcement is enabled.
 ### Activity
 
 Activity endpoints use the following object. Nullable fields can contain `null`.
-Dates emitted by ASP.NET Core use ISO 8601 JSON strings.
+`v1` and `v2` return identical fields; they differ only in how `startDate`,
+`dueDate`, `createdAt`, `lastDueDateNotificationDate`, and
+`lastStatusChangeNotificationDate` are serialized — see
+[Why `/api/v2/Activity/...` exists](#why-apiv2activity-exists). The examples
+below use the same underlying activity in both shapes.
+
+`v1` (legacy, and all unversioned legacy-alias routes) — naive GMT+7 wall-clock
+strings, no offset:
 
 ```json
 {
@@ -403,6 +442,43 @@ Dates emitted by ASP.NET Core use ISO 8601 JSON strings.
   "dueDate": "2026-07-31T23:59:00",
   "editGroupMode": "",
   "createdAt": "2026-06-30T12:00:00",
+  "user": 2001,
+  "activitySubmissionId": null,
+  "classUserId": 4001,
+  "activityGroupId": null,
+  "activityGroupName": null,
+  "activitySubmissionSubmittedAt": null,
+  "dueDateExceed": false,
+  "quizSubmissionIsSubmitted": false,
+  "countGroupMember": 1,
+  "activitySubmissionIsLate": false,
+  "fileActivities": [],
+  "questions": [],
+  "submissions": [],
+  "lastDueDateNotificationDate": null,
+  "lastStatusChangeNotificationDate": null,
+  "previousSubmissionStatus": null
+}
+```
+
+`v2` — genuine UTC instants:
+
+```json
+{
+  "id": 1001,
+  "userId": 2001,
+  "classId": 3001,
+  "advStarred": 0,
+  "groupType": "individual",
+  "type": "ASM",
+  "peerAssessment": 0,
+  "isAllowRepeat": 0,
+  "title": "Example assignment",
+  "description": "<p>Example description</p>",
+  "startDate": "2026-07-01T02:00:00.000Z",
+  "dueDate": "2026-07-31T16:59:00.000Z",
+  "editGroupMode": "",
+  "createdAt": "2026-06-30T05:00:00.000Z",
   "user": 2001,
   "activitySubmissionId": null,
   "classUserId": 4001,
@@ -805,6 +881,10 @@ and can produce `502 LEB2_UNAVAILABLE`.
 
 ### GET `/api/v1/Activity/{semesterId}/{classId}`
 
+Legacy shape — see [`v2`](#get-apiv2activitysemesteridclassid) for the
+timezone-corrected version and
+[Why `/api/v2/Activity/...` exists](#why-apiv2activity-exists).
+
 Returns activities for one class.
 
 Route parameters:
@@ -904,7 +984,29 @@ Relevant error responses:
 A non-integer route value does not match the route and normally produces the
 framework's `404` response.
 
+### GET `/api/v2/Activity/{semesterId}/{classId}`
+
+Identical to [`GET /api/v1/Activity/{semesterId}/{classId}`](#get-apiv1activitysemesteridclassid)
+in route parameters, headers, discovery behavior, and error responses. The only
+difference is that `startDate`, `dueDate`, `createdAt`,
+`lastDueDateNotificationDate`, and `lastStatusChangeNotificationDate` serialize as
+genuine UTC instants instead of naive GMT+7 wall-clock strings — see the `v2`
+[Activity](#activity) sample above.
+
+Example request:
+
+```http
+GET /api/v2/Activity/101/3001
+access-key: 00000000-0000-4000-8000-000000000001
+Authorization: Bearer <leb2-session-cookie>
+X-LEB2-USER-ID: 2001
+```
+
 ### GET `/api/v1/Activity/{semesterId}`
+
+Legacy shape — see [`v2`](#get-apiv2activitysemesterid) for the
+timezone-corrected version and
+[Why `/api/v2/Activity/...` exists](#why-apiv2activity-exists).
 
 Discovers every class in a semester, retrieves their activities with maximum
 parallelism two, and returns one flat activity array. Classes are processed in class
@@ -988,7 +1090,29 @@ Relevant error responses are the same as
 response applies only to the class-membership check performed when `classId` is
 supplied.
 
+### GET `/api/v2/Activity/{semesterId}`
+
+Identical to [`GET /api/v1/Activity/{semesterId}`](#get-apiv1activitysemesterid) in
+route parameters, headers, discovery behavior, and error responses. The only
+difference is that `startDate`, `dueDate`, `createdAt`,
+`lastDueDateNotificationDate`, and `lastStatusChangeNotificationDate` serialize as
+genuine UTC instants instead of naive GMT+7 wall-clock strings — see the `v2`
+[Activity](#activity) sample above.
+
+Example request:
+
+```http
+GET /api/v2/Activity/101
+access-key: 00000000-0000-4000-8000-000000000001
+Authorization: Bearer <leb2-session-cookie>
+X-LEB2-USER-ID: 2001
+```
+
 ### GET `/api/v1/Activity/{semesterId}/snapshot`
+
+Legacy shape — see [`v2`](#get-apiv2activitysemesteridsnapshot) for the
+timezone-corrected version and
+[Why `/api/v2/Activity/...` exists](#why-apiv2activity-exists).
 
 Returns the semester's classes and activities as a nested snapshot. Classes with no
 activities remain in the response.
@@ -1087,6 +1211,24 @@ Relevant error responses are the same as
 response applies only to the class-membership check performed when `classId` is
 supplied.
 
+### GET `/api/v2/Activity/{semesterId}/snapshot`
+
+Identical to [`GET /api/v1/Activity/{semesterId}/snapshot`](#get-apiv1activitysemesteridsnapshot)
+in route parameters, headers, nesting behavior, and error responses. The only
+difference is that each nested activity's `startDate`, `dueDate`, `createdAt`,
+`lastDueDateNotificationDate`, and `lastStatusChangeNotificationDate` serialize as
+genuine UTC instants instead of naive GMT+7 wall-clock strings — see the `v2`
+[Activity](#activity) sample above.
+
+Example request:
+
+```http
+GET /api/v2/Activity/101/snapshot
+access-key: 00000000-0000-4000-8000-000000000001
+Authorization: Bearer <leb2-session-cookie>
+X-LEB2-USER-ID: 2001
+```
+
 ### GET `/api/v1/health/leb2`
 
 Returns locally observed request-gate/backoff state for each fixed LEB2 dependency.
@@ -1179,6 +1321,9 @@ Swagger UI is available only when `ASPNETCORE_ENVIRONMENT=Development`:
 
 The normal Cloud Run deployment runs with `ASPNETCORE_ENVIRONMENT=Production`, so
 Swagger is disabled there.
+
+The Swagger UI version selector lists both `v1` and `v2` documents. `v2` advertises
+only the `ActivityController` routes; every other route appears in `v1` only.
 
 Swagger exposes `access-key` as an API-key header scheme and the existing opaque
 LEB2 bearer scheme. Login and cookie operations advertise only `access-key`; data

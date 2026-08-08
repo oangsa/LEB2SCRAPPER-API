@@ -5,7 +5,8 @@ namespace LEB2SCRAPPER.Entity.ModelsExtension;
 
 public static class ActivityExtension
 {
-    public static string StatusText(this Activity activity) => activity.GetStatusText();
+    public static string StatusText(this Activity activity, DateTimeOffset? utcNow = null) =>
+        activity.GetStatusText(utcNow ?? DateTimeOffset.UtcNow);
     public static bool IsUnsubmitted(this Activity activity) => activity.GetIsUnsubmitted();
     public static bool ShowNotSubmittedBadge(this Activity activity) => activity.IsUnsubmitted() && !activity.IsSubmitted();
     public static bool ShowOverdueBadge(this Activity activity) => activity.DueDateExceed && !activity.IsSubmitted();
@@ -88,7 +89,7 @@ public static class ActivityExtension
         return "Unknown";
     }
 
-    private static string GetStatusText(this Activity activity)
+    private static string GetStatusText(this Activity activity, DateTimeOffset utcNow)
     {
         if (activity.Type == "QUZ" && activity.QuizSubmissionIsSubmitted)
             return "Submitted";
@@ -99,7 +100,7 @@ public static class ActivityExtension
         if (activity.DueDateExceed)
             return "Overdue";
 
-        if (activity.DueDate.HasValue && activity.DueDate.Value > DateTime.Now)
+        if (activity.DueDate.HasValue && activity.DueDate.Value > utcNow.UtcDateTime)
             return "Pending";
 
         return "Available";

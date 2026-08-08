@@ -32,4 +32,6 @@ public class Activity
     public DateTime? LastDueDateNotificationDate { get; set; }
     public DateTime? LastStatusChangeNotificationDate { get; set; }
     public bool? PreviousSubmissionStatus { get; set; }
+
+    public Activity Clone() => (Activity)MemberwiseClone();
 }
