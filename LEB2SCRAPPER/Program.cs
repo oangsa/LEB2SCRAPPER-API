@@ -240,10 +240,15 @@ builder.Services.AddSwaggerGen(options =>
         Title = "LEB2SCRAPPER API",
         Version = "v1"
     });
+    options.SwaggerDoc("v2", new OpenApiInfo
+    {
+        Title = "LEB2SCRAPPER API",
+        Version = "v2"
+    });
     options.DocInclusionPredicate(
-        (_, apiDescription) =>
+        (docName, apiDescription) =>
             apiDescription.RelativePath?.StartsWith(
-                "api/v1/",
+                $"api/{docName}/",
                 StringComparison.OrdinalIgnoreCase) == true);
     options.AddSecurityDefinition(
         Leb2BearerDefaults.AuthenticationScheme,
@@ -284,6 +289,9 @@ if (app.Environment.IsDevelopment())
         options.SwaggerEndpoint(
             "/swagger/v1/swagger.json",
             "LEB2SCRAPPER API v1");
+        options.SwaggerEndpoint(
+            "/swagger/v2/swagger.json",
+            "LEB2SCRAPPER API v2");
     });
 }
 

@@ -383,6 +383,139 @@ public class ApiIntegrationTests
         Assert.Equal([1, 2], activities!.Select(activity => activity.Id));
     }
 
+    [Fact]
+    public async Task V1ClassActivityRoute_KeepsLegacyNaiveGmtPlus7DueDateFormat()
+    {
+        var activityService = new FakeActivityService
+        {
+            GetByClassHandler = (_, _, _, _, _) => Task.FromResult<List<Activity>?>(
+            [
+                new Activity
+                {
+                    Id = 1,
+                    ClassId = 20,
+                    DueDate = new DateTime(2026, 8, 8, 16, 0, 0, DateTimeKind.Utc)
+                }
+            ])
+        };
+        using var factory = CreateFactory(activityService);
+        using var client = CreateAuthenticatedClient(factory);
+
+        var response = await client.GetAsync("/api/v1/Activity/10/20");
+        var body = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains("\"dueDate\":\"2026-08-08T23:00:00\"", body);
+    }
+
+    [Fact]
+    public async Task V2ClassActivityRoute_ReturnsCorrectedUtcDueDateFormat()
+    {
+        var activityService = new FakeActivityService
+        {
+            GetByClassHandler = (_, _, _, _, _) => Task.FromResult<List<Activity>?>(
+            [
+                new Activity
+                {
+                    Id = 1,
+                    ClassId = 20,
+                    DueDate = new DateTime(2026, 8, 8, 16, 0, 0, DateTimeKind.Utc)
+                }
+            ])
+        };
+        using var factory = CreateFactory(activityService);
+        using var client = CreateAuthenticatedClient(factory);
+
+        var response = await client.GetAsync("/api/v2/Activity/10/20");
+        var body = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains("\"dueDate\":\"2026-08-08T16:00:00Z\"", body);
+    }
+
+    [Fact]
+    public async Task UnversionedLegacyAliasActivityRoute_MatchesV1NaiveDueDateFormat()
+    {
+        var activityService = new FakeActivityService
+        {
+            GetByClassHandler = (_, _, _, _, _) => Task.FromResult<List<Activity>?>(
+            [
+                new Activity
+                {
+                    Id = 1,
+                    ClassId = 20,
+                    DueDate = new DateTime(2026, 8, 8, 16, 0, 0, DateTimeKind.Utc)
+                }
+            ])
+        };
+        using var factory = CreateFactory(activityService);
+        using var client = CreateAuthenticatedClient(factory);
+
+        var response = await client.GetAsync("/Activity/10/20");
+        var body = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains("\"dueDate\":\"2026-08-08T23:00:00\"", body);
+    }
+
+    [Fact]
+    public async Task V1SemesterSnapshotRoute_AppliesLegacyDueDateFormatToNestedActivities()
+    {
+        var activityService = new FakeActivityService
+        {
+            GetSnapshotHandler = (_, semesterId, _, _) => Task.FromResult(
+                new SemesterSnapshotResponse
+                {
+                    SemesterId = semesterId,
+                    Classes =
+                    [
+                        new SemesterSnapshotClass
+                        {
+                            Id = 20,
+                            Name = "Example Class",
+                            Activities =
+                            [
+                                new Activity
+                                {
+                                    Id = 1,
+                                    ClassId = 20,
+                                    DueDate = new DateTime(2026, 8, 8, 16, 0, 0, DateTimeKind.Utc)
+                                }
+                            ]
+                        }
+                    ]
+                })
+        };
+        using var factory = CreateFactory(activityService);
+        using var client = CreateAuthenticatedClient(factory);
+
+        var response = await client.GetAsync("/api/v1/Activity/10/snapshot");
+        var body = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains("\"dueDate\":\"2026-08-08T23:00:00\"", body);
+    }
+
+    [Fact]
+    public async Task Swagger_V2DocAdvertisesOnlyActivityRoutes()
+    {
+        using var factory = CreateFactory(new FakeActivityService());
+        using var client = factory.CreateClient();
+
+        using var swagger = await client.GetFromJsonAsync<JsonDocument>(
+            "/swagger/v2/swagger.json");
+        var info = swagger!.RootElement.GetProperty("info");
+        var paths = swagger.RootElement.GetProperty("paths");
+
+        Assert.Equal("v2", info.GetProperty("version").GetString());
+        Assert.True(paths.TryGetProperty("/api/v2/Activity/{semesterId}/{classId}", out _));
+        Assert.True(paths.TryGetProperty("/api/v2/Activity/{semesterId}", out _));
+        Assert.True(paths.TryGetProperty("/api/v2/Activity/{semesterId}/snapshot", out _));
+        Assert.False(paths.TryGetProperty("/api/v2/Semester", out _));
+        Assert.False(paths.TryGetProperty("/api/v2/Class/{id}", out _));
+        Assert.False(paths.TryGetProperty("/api/v2/User/login", out _));
+    }
+
     [Theory]
     [InlineData("not-found", HttpStatusCode.NotFound, ApiErrorCodes.ResourceNotFound)]
     [InlineData("session", HttpStatusCode.Unauthorized, ApiErrorCodes.SessionExpired)]
