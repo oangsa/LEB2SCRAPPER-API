@@ -63,6 +63,44 @@ public class ApiIntegrationTests
     }
 
     [Fact]
+    public async Task Meta_ReportsLiveReleaseVersionWhenProviderResolvesIt()
+    {
+        using var factory = CreateFactory(
+            new FakeActivityService(),
+            clientCompatibilityOptions: new ClientCompatibilityOptions
+            {
+                LatestClientVersion = "0.5.0"
+            },
+            latestClientVersionProvider: new FakeLatestClientVersionProvider("1.2.3"));
+        using var client = factory.CreateClient();
+
+        var response = await client.GetAsync("/api/v1/meta");
+        var metadata = await response.Content.ReadFromJsonAsync<ApiMetadataResponse>();
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("1.2.3", metadata?.LatestClientVersion);
+    }
+
+    [Fact]
+    public async Task Meta_FallsBackToConfiguredVersionWhenProviderReturnsNull()
+    {
+        using var factory = CreateFactory(
+            new FakeActivityService(),
+            clientCompatibilityOptions: new ClientCompatibilityOptions
+            {
+                LatestClientVersion = "0.5.0"
+            },
+            latestClientVersionProvider: new FakeLatestClientVersionProvider(null));
+        using var client = factory.CreateClient();
+
+        var response = await client.GetAsync("/api/v1/meta");
+        var metadata = await response.Content.ReadFromJsonAsync<ApiMetadataResponse>();
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("0.5.0", metadata?.LatestClientVersion);
+    }
+
+    [Fact]
     public async Task UnsupportedV2_DoesNotInvokeApplicationService()
     {
         var semesterService = new FakeSemesterService
@@ -1424,7 +1462,8 @@ public class ApiIntegrationTests
         ApiVersioningOptions? apiVersioningOptions = null,
         ClientCompatibilityOptions? clientCompatibilityOptions = null,
         DeviceBindingOptions? deviceBindingOptions = null,
-        IClassService? classService = null)
+        IClassService? classService = null,
+        ILatestClientVersionProvider? latestClientVersionProvider = null)
     {
         return new WebApplicationFactory<Program>()
             .WithWebHostBuilder(builder =>
@@ -1467,6 +1506,11 @@ public class ApiIntegrationTests
                         services.RemoveAll<DeviceBindingOptions>();
                         services.AddSingleton(deviceBindingOptions);
                     }
+
+                    services.RemoveAll<ILatestClientVersionProvider>();
+                    services.AddSingleton<ILatestClientVersionProvider>(
+                        latestClientVersionProvider
+                            ?? new FakeLatestClientVersionProvider(null));
 
                     if (statusReader is not null)
                     {
@@ -1890,6 +1934,21 @@ public class ApiIntegrationTests
             }
 
             return GetHandler(token, cancellationToken);
+        }
+    }
+
+    private sealed class FakeLatestClientVersionProvider : ILatestClientVersionProvider
+    {
+        private readonly string? _version;
+
+        public FakeLatestClientVersionProvider(string? version)
+        {
+            _version = version;
+        }
+
+        public Task<string?> GetLatestVersionAsync(CancellationToken cancellationToken)
+        {
+            return Task.FromResult(_version);
         }
     }
 

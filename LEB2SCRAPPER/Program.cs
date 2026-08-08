@@ -7,6 +7,7 @@ using LEB2SCRAPPER.Infrastructure.Alerting;
 using LEB2SCRAPPER.Infrastructure.Contracts.AccessKey;
 using LEB2SCRAPPER.Infrastructure.Contracts.Alerting;
 using LEB2SCRAPPER.Infrastructure.Contracts.Authentication;
+using LEB2SCRAPPER.Infrastructure.Compatibility;
 using LEB2SCRAPPER.Infrastructure.Contracts.Compatibility;
 using LEB2SCRAPPER.Infrastructure.Contracts.HttpService;
 using LEB2SCRAPPER.Infrastructure.Contracts.Outbound;
@@ -207,6 +208,15 @@ builder.Services.AddSingleton<IOutboundRequestStatusReader>(
 builder.Services
     .AddHttpClient<IHttpService, HttpService>()
     .ConfigurePrimaryHttpMessageHandler(Leb2HttpClientHandlerFactory.Create);
+
+builder.Services.AddHttpClient<ILatestClientVersionProvider, GithubLatestClientVersionProvider>(
+    client =>
+    {
+        client.BaseAddress = new Uri("https://api.github.com/");
+        client.Timeout = TimeSpan.FromSeconds(3);
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("leb2scrapper-api");
+        client.DefaultRequestHeaders.Accept.ParseAdd("application/vnd.github+json");
+    });
 
 builder.Services.AddScoped<Leb2SessionCredential>();
 builder.Services.AddScoped<ILeb2SessionCredential>(
